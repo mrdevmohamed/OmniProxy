@@ -61,6 +61,13 @@ void main() {
         timeout: const Duration(seconds: 30));
     expect(find.text('Connected'), findsWidgets);
 
+    // The Logs tab renders entries streamed from the real core (logAppended
+    // event → ring → Kotlin poller → bridge stream → logsProvider).
+    await tester.tap(find.text('Logs'));
+    await _pumpUntilFound(tester, find.textContaining('connected to'),
+        timeout: const Duration(seconds: 15));
+    expect(find.textContaining('connected to'), findsWidgets);
+
     // Disconnect back to idle.
     await client.disconnect();
     await _pumpUntilFound(tester, find.text('Disconnected'),

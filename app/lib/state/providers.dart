@@ -149,3 +149,63 @@ class ConnectionNotifier extends Notifier<ConnectionUiState> {
     await ref.read(apiClientProvider).disconnect();
   }
 }
+
+/// Live log viewer buffer driven by the contract's `logAppended` events,
+/// seeded from `getLogs`. Entries are deduplicated by sequence number.
+final logsProvider =
+    NotifierProvider<LogsNotifier, List<LogEntry>>(LogsNotifier.new);
+
+class LogsNotifier extends Notifier<List<LogEntry>> {
+  static const _cap = 500;
+  StreamSubscription<AppEvent>? _subscription;
+  int _lastSeq = 0;
+
+  @override
+  List<LogEntry> build() {
+    final client = ref.watch(apiClientProvider);
+    _subscription?.cancel();
+    _subscription = client.events.listen(_onEvent);
+    ref.onDispose(() => _subscription?.cancel());
+    unawaited(_seed());
+    return const [];
+  }
+
+  Future<void> _seed() async {
+    try {
+      final logs =
+          await ref.read(apiClientProvider).getLogs(afterSeq: _lastSeq);
+      if (!ref.mounted) return;
+      final fresh = logs.where((l) => l.seq > _lastSeq).toList();
+      if (fresh.isEmpty) return;
+      _lastSeq = fresh.last.seq;
+      state = [...state, ...fresh];
+      _trim();
+    } on ApiError {
+      // The log viewer degrades gracefully if getLogs fails.
+    }
+  }
+
+  void _onEvent(AppEvent event) {
+    if (event.type != 'logAppended') return;
+    final entry = LogEntry.fromJson(event.data);
+    if (entry.seq <= _lastSeq) return;
+    _lastSeq = entry.seq;
+    state = [...state, entry];
+    _trim();
+  }
+
+  void _trim() {
+    if (state.length > _cap) {
+      state = state.sublist(state.length - _cap);
+    }
+  }
+
+  /// Re-fetch recent entries from core (e.g. after clearing).
+  Future<void> refresh() async {
+    state = const [];
+    _lastSeq = 0;
+    await _seed();
+  }
+
+  void clear() => state = const [];
+}

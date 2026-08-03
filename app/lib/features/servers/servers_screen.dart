@@ -196,11 +196,16 @@ class ServersScreen extends ConsumerWidget {
           .read(serversProvider.notifier)
           .import(ImportSource(kind: kind, data: source));
       if (!context.mounted) return;
-      final message = result.failed == 0
-          ? 'Imported ${result.added} server(s)'
-          : 'Imported ${result.added}, failed ${result.failed}';
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
+      if (result.failed == 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Imported ${result.added} server(s)')),
+        );
+      } else {
+        showDialog<void>(
+          context: context,
+          builder: (_) => _ImportResultDialog(result: result),
+        );
+      }
     } on ApiError catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
@@ -312,7 +317,8 @@ class _ServerCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${server.protocol.wire} · ${server.address}:${server.port}',
+                      '${server.protocol.wire} · ${server.address}:${server.port}'
+                      '${_transportLabel(server)}',
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                       overflow: TextOverflow.ellipsis,
@@ -400,10 +406,20 @@ class _ServerCard extends StatelessWidget {
         ServerProtocol.vless => 'VL',
         ServerProtocol.vmess => 'VM',
         ServerProtocol.shadowsocks => 'SS',
+        ServerProtocol.trojan => 'TR',
         ServerProtocol.socks5 => 'S5',
         ServerProtocol.http => 'HTTP',
         ServerProtocol.ssh => 'SSH',
       };
+
+  String _transportLabel(ServerProfile server) {
+    final t = server.transport;
+    if (t == null) return '';
+    return switch (t.type) {
+      TransportType.ws => ' · ws',
+      TransportType.tcp => '',
+    };
+  }
 }
 
 class _ImportDialog extends StatefulWidget {
@@ -429,7 +445,8 @@ class _ImportDialogState extends State<_ImportDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Paste an exported configuration or a shareable link.',
+            'Paste an exported configuration or one or more share links '
+            '(vmess://, vless://, ss://, trojan://).',
             style: TextStyle(fontSize: 13),
           ),
           const SizedBox(height: 12),
@@ -438,7 +455,7 @@ class _ImportDialogState extends State<_ImportDialog> {
             maxLines: 6,
             minLines: 3,
             decoration: const InputDecoration(
-              hintText: 'Paste .onnproxy configuration…',
+              hintText: 'Paste links or .onnproxy configuration…',
               alignLabelWithHint: true,
             ),
           ),
@@ -459,9 +476,7 @@ class _ImportDialogState extends State<_ImportDialog> {
 }
 
 class _ExportDialog extends StatelessWidget {
-  const _ExportDialog({required this.blob});
-
-  final String blob;
+  const _ExportDialog({required this.blob});  final String blob;
 
   @override
   Widget build(BuildContext context) {
@@ -509,6 +524,66 @@ class _ExportDialog extends StatelessWidget {
           },
           icon: const Icon(Icons.copy),
           label: const Text('Copy'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImportResultDialog extends StatelessWidget {
+  const _ImportResultDialog({required this.result});
+
+  final ImportResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: Text(
+        result.added > 0
+            ? 'Imported ${result.added} server(s)'
+            : 'Nothing imported',
+      ),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              result.failed == 1
+                  ? '1 item failed to import'
+                  : '${result.failed} items failed to import',
+              style: TextStyle(
+                color: scheme.error,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final error in result.errors)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          error.message,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
         ),
       ],
     );

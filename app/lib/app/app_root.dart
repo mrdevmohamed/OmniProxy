@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/models.dart';
 import '../features/dashboard/dashboard_screen.dart';
+import '../features/logs/logs_screen.dart';
 import '../features/servers/servers_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../state/providers.dart';
@@ -47,6 +48,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final screens = <Widget>[
       DashboardScreen(onNavigateToServers: _selectServers),
       const ServersScreen(),
+      const LogsScreen(),
       const SettingsScreen(),
     ];
     final appBar = AppBar(

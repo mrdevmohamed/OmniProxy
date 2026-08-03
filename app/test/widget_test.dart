@@ -81,7 +81,19 @@ void main() {
     await tester.enterText(find.widgetWithText(TextFormField, 'UUID'),
         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Add server'));
+    final submit = find.widgetWithText(FilledButton, 'Add server');
+    await tester.scrollUntilVisible(
+      submit,
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(submit);
     await tester.pumpAndSettle();
 
     expect(find.text('New Server'), findsOneWidget);
@@ -102,5 +114,21 @@ void main() {
         ProviderScope.containerOf(tester.element(find.byType(SettingsScreen)));
     expect(container.read(settingsProvider).connectionMode,
         ConnectionMode.proxy);
+  });
+
+  testWidgets('logs tab streams core log entries', (tester) async {
+    final client = MockApiClient(connectDelay: const Duration(milliseconds: 100));
+    await tester.pumpWidget(buildApp(client: client));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Connect'));
+    await tester.pumpAndSettle();
+    expect(find.text('Connected'), findsWidgets);
+
+    await tester.tap(find.text('Logs'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Connected to'), findsOneWidget);
+    expect(find.text('INFO'), findsWidgets);
   });
 }

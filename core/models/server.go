@@ -19,6 +19,7 @@ const (
 	ProtocolVLESS       Protocol = "vless"
 	ProtocolVMess       Protocol = "vmess"
 	ProtocolShadowsocks Protocol = "shadowsocks"
+	ProtocolTrojan      Protocol = "trojan"
 	ProtocolSOCKS5      Protocol = "socks5"
 	ProtocolHTTP        Protocol = "http"
 	ProtocolSSH         Protocol = "ssh"
@@ -30,9 +31,29 @@ var SupportedProtocols = []Protocol{
 	ProtocolVLESS,
 	ProtocolVMess,
 	ProtocolShadowsocks,
+	ProtocolTrojan,
 	ProtocolSOCKS5,
 	ProtocolHTTP,
 	ProtocolSSH,
+}
+
+// TransportType identifies a stream transport for the vless/vmess/trojan
+// outbounds. The empty value means plain TCP.
+type TransportType string
+
+const (
+	TransportTCP TransportType = ""
+	TransportWS  TransportType = "ws"
+)
+
+// TransportConfig holds stream-transport settings (Phase 1: WebSocket). The
+// shape mirrors the sing-box `transport` option and the onnproxy envelope.
+type TransportConfig struct {
+	Type                TransportType `json:"type,omitempty"`
+	Path                string        `json:"path,omitempty"`
+	Host                string        `json:"host,omitempty"`
+	MaxEarlyData        uint32        `json:"maxEarlyData,omitempty"`
+	EarlyDataHeaderName string        `json:"earlyDataHeaderName,omitempty"`
 }
 
 // TLSConfig holds TLS settings for a server profile. Certificate validation is
@@ -43,6 +64,7 @@ type TLSConfig struct {
 	AllowInsecure bool     `json:"allowInsecure"`
 	ServerName    string   `json:"serverName,omitempty"`
 	ALPN          []string `json:"alpn,omitempty"`
+	Fingerprint   string   `json:"fingerprint,omitempty"`
 }
 
 // SSHConfig holds SSH-tunnel-specific settings.
@@ -57,22 +79,27 @@ type SSHConfig struct {
 // layer stores them in OS-native secure storage, never plaintext on disk, and
 // the logger redacts them.
 type ServerProfile struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Protocol      Protocol   `json:"protocol"`
-	Address       string     `json:"address"`
-	Port          int        `json:"port"`
-	Username      string     `json:"username,omitempty"`
-	Password      string     `json:"password,omitempty"`
-	Cipher        string     `json:"cipher,omitempty"`
-	UUID          string     `json:"uuid,omitempty"`
-	TLS           TLSConfig  `json:"tls"`
-	SSH           SSHConfig  `json:"ssh"`
-	Favorite      bool       `json:"favorite"`
-	LastLatencyMS int        `json:"lastLatencyMs"`
-	LastTestedAt  *time.Time `json:"lastTestedAt,omitempty"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	ID             string           `json:"id"`
+	Name           string           `json:"name"`
+	Protocol       Protocol         `json:"protocol"`
+	Address        string           `json:"address"`
+	Port           int              `json:"port"`
+	Username       string           `json:"username,omitempty"`
+	Password       string           `json:"password,omitempty"`
+	Cipher         string           `json:"cipher,omitempty"`
+	UUID           string           `json:"uuid,omitempty"`
+	Flow           string           `json:"flow,omitempty"`
+	Security       string           `json:"security,omitempty"`
+	TLS            TLSConfig        `json:"tls"`
+	SSH            SSHConfig        `json:"ssh"`
+	Transport      *TransportConfig `json:"transport,omitempty"`
+	GlobalPadding  bool             `json:"globalPadding,omitempty"`
+	PacketEncoding string           `json:"packetEncoding,omitempty"`
+	Favorite       bool             `json:"favorite"`
+	LastLatencyMS  int              `json:"lastLatencyMs"`
+	LastTestedAt   *time.Time       `json:"lastTestedAt,omitempty"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
 }
 
 // Clone returns a deep copy of the profile.
@@ -83,6 +110,10 @@ func (p *ServerProfile) Clone() *ServerProfile {
 	cp := *p
 	if p.TLS.ALPN != nil {
 		cp.TLS.ALPN = append([]string(nil), p.TLS.ALPN...)
+	}
+	if p.Transport != nil {
+		t := *p.Transport
+		cp.Transport = &t
 	}
 	if p.LastTestedAt != nil {
 		t := *p.LastTestedAt
@@ -118,6 +149,10 @@ func (p *ServerProfile) Validate() error {
 		if p.Cipher == "" {
 			return field("cipher is required for shadowsocks")
 		}
+	case ProtocolTrojan:
+		if p.Password == "" {
+			return field("password is required for trojan")
+		}
 	case ProtocolSSH:
 		if p.SSH.User == "" {
 			return field("ssh user is required")
@@ -128,6 +163,13 @@ func (p *ServerProfile) Validate() error {
 	case ProtocolSOCKS5, ProtocolHTTP:
 	default:
 		return field("unsupported protocol " + string(p.Protocol))
+	}
+	if p.Transport != nil {
+		switch p.Transport.Type {
+		case TransportTCP, TransportWS:
+		default:
+			return field("unsupported transport " + string(p.Transport.Type))
+		}
 	}
 	return nil
 }

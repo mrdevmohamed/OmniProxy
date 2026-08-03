@@ -24,13 +24,21 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
   late final TextEditingController _password;
   late final TextEditingController _cipher;
   late final TextEditingController _uuid;
+  late final TextEditingController _flow;
   late final TextEditingController _sshUser;
   late final TextEditingController _sshKey;
   late final TextEditingController _serverName;
+  late final TextEditingController _fingerprint;
+  late final TextEditingController _transportPath;
+  late final TextEditingController _transportHost;
+  late final TextEditingController _packetEncoding;
 
   late ServerProtocol _protocol;
+  late String _security;
+  late TransportType _transport;
   late bool _tlsEnabled;
   late bool _tlsAllowInsecure;
+  late bool _globalPadding;
   late bool _favorite;
   bool _saving = false;
 
@@ -47,12 +55,20 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
     _password = TextEditingController(text: s?.password ?? '');
     _cipher = TextEditingController(text: s?.cipher ?? 'aes-128-gcm');
     _uuid = TextEditingController(text: s?.uuid ?? '');
+    _flow = TextEditingController(text: s?.flow ?? '');
     _sshUser = TextEditingController(text: s?.ssh.user ?? '');
     _sshKey = TextEditingController(text: s?.ssh.privateKey ?? '');
     _serverName = TextEditingController(text: s?.tls.serverName ?? '');
+    _fingerprint = TextEditingController(text: s?.tls.fingerprint ?? '');
+    _transportPath = TextEditingController(text: s?.transport?.path ?? '');
+    _transportHost = TextEditingController(text: s?.transport?.host ?? '');
+    _packetEncoding = TextEditingController(text: s?.packetEncoding ?? '');
     _protocol = s?.protocol ?? ServerProtocol.vless;
+    _security = s?.security ?? 'auto';
+    _transport = s?.transport?.type ?? TransportType.tcp;
     _tlsEnabled = s?.tls.enabled ?? false;
     _tlsAllowInsecure = s?.tls.allowInsecure ?? false;
+    _globalPadding = s?.globalPadding ?? false;
     _favorite = s?.favorite ?? false;
   }
 
@@ -65,9 +81,14 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
     _password.dispose();
     _cipher.dispose();
     _uuid.dispose();
+    _flow.dispose();
     _sshUser.dispose();
     _sshKey.dispose();
     _serverName.dispose();
+    _fingerprint.dispose();
+    _transportPath.dispose();
+    _transportHost.dispose();
+    _packetEncoding.dispose();
     super.dispose();
   }
 
@@ -133,13 +154,23 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
                 ],
               ),
               ..._credentialFields(),
+              ..._protocolFields(),
               const SizedBox(height: 8),
               _TlsSection(
                 enabled: _tlsEnabled,
                 allowInsecure: _tlsAllowInsecure,
                 serverName: _serverName,
+                fingerprint: _fingerprint,
                 onEnabled: (v) => setState(() => _tlsEnabled = v),
                 onAllowInsecure: (v) => setState(() => _tlsAllowInsecure = v),
+              ),
+              const SizedBox(height: 8),
+              _TransportSection(
+                visible: _usesTransport,
+                transport: _transport,
+                path: _transportPath,
+                host: _transportHost,
+                onChanged: (t) => setState(() => _transport = t),
               ),
               const SizedBox(height: 8),
               SwitchListTile(
@@ -167,13 +198,19 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
     );
   }
 
+  bool get _usesTransport =>
+      _protocol == ServerProtocol.vless ||
+      _protocol == ServerProtocol.vmess ||
+      _protocol == ServerProtocol.trojan;
+
   List<Widget> _credentialFields() {
     final usesUsername = _protocol == ServerProtocol.socks5 ||
         _protocol == ServerProtocol.http ||
         _protocol == ServerProtocol.ssh;
     final usesPassword = _protocol == ServerProtocol.socks5 ||
         _protocol == ServerProtocol.http ||
-        _protocol == ServerProtocol.shadowsocks;
+        _protocol == ServerProtocol.shadowsocks ||
+        _protocol == ServerProtocol.trojan;
     final usesCipher = _protocol == ServerProtocol.shadowsocks;
     final usesUuid = _protocol == ServerProtocol.vless ||
         _protocol == ServerProtocol.vmess;
@@ -240,6 +277,59 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
     return fields;
   }
 
+  /// Protocol-specific options beyond credentials (flow, VMess security, and
+  /// the UDP-over-WS packet encoding settings).
+  List<Widget> _protocolFields() {
+    final fields = <Widget>[];
+    if (_protocol == ServerProtocol.vless) {
+      fields.add(const SizedBox(height: 16));
+      fields.add(TextFormField(
+        controller: _flow,
+        textInputAction: TextInputAction.next,
+        decoration: const InputDecoration(
+          labelText: 'Flow',
+          helperText: 'Optional, e.g. xtls-rprx-vision',
+        ),
+      ));
+    }
+    if (_protocol == ServerProtocol.vmess) {
+      fields.add(const SizedBox(height: 16));
+      fields.add(DropdownButtonFormField<String>(
+        initialValue: _security,
+        decoration: const InputDecoration(labelText: 'Security'),
+        items: const [
+          DropdownMenuItem(value: 'auto', child: Text('auto')),
+          DropdownMenuItem(value: 'none', child: Text('none')),
+          DropdownMenuItem(value: 'aes-128-gcm', child: Text('aes-128-gcm')),
+          DropdownMenuItem(
+              value: 'chacha20-poly1305', child: Text('chacha20-poly1305')),
+        ],
+        onChanged: (v) => setState(() => _security = v ?? 'auto'),
+      ));
+      fields.add(const SizedBox(height: 8));
+      fields.add(SwitchListTile(
+        value: _globalPadding,
+        onChanged: (v) => setState(() => _globalPadding = v),
+        title: const Text('Global padding'),
+        subtitle: const Text('Required for UDP over WebSocket on some servers'),
+        contentPadding: EdgeInsets.zero,
+      ));
+    }
+    if (_protocol == ServerProtocol.vless ||
+        _protocol == ServerProtocol.vmess) {
+      fields.add(const SizedBox(height: 16));
+      fields.add(TextFormField(
+        controller: _packetEncoding,
+        textInputAction: TextInputAction.next,
+        decoration: const InputDecoration(
+          labelText: 'Packet encoding',
+          helperText: 'Optional, e.g. xudp for UDP over WebSocket',
+        ),
+      ));
+    }
+    return fields;
+  }
+
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
@@ -254,17 +344,36 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
       password: _password.text.isEmpty ? null : _password.text,
       cipher: _cipher.text.trim().isEmpty ? null : _cipher.text.trim(),
       uuid: _uuid.text.trim().isEmpty ? null : _uuid.text.trim(),
+      flow: _flow.text.trim().isEmpty ? null : _flow.text.trim(),
+      security: _protocol == ServerProtocol.vmess ? _security : null,
       tls: TlsSettings(
         enabled: _tlsEnabled,
         allowInsecure: _tlsAllowInsecure,
         serverName: _serverName.text.trim().isEmpty
             ? null
             : _serverName.text.trim(),
+        fingerprint:
+            _fingerprint.text.trim().isEmpty ? null : _fingerprint.text.trim(),
       ),
       ssh: SshSettings(
         user: _sshUser.text.trim().isEmpty ? null : _sshUser.text.trim(),
         privateKey: _sshKey.text.isEmpty ? null : _sshKey.text,
       ),
+      transport: _usesTransport && _transport != TransportType.tcp
+          ? TransportSettings(
+              type: _transport,
+              path: _transportPath.text.trim().isEmpty
+                  ? null
+                  : _transportPath.text.trim(),
+              host: _transportHost.text.trim().isEmpty
+                  ? null
+                  : _transportHost.text.trim(),
+            )
+          : null,
+      globalPadding: _globalPadding,
+      packetEncoding: _packetEncoding.text.trim().isEmpty
+          ? null
+          : _packetEncoding.text.trim(),
       favorite: _favorite,
       lastLatencyMs: widget.server?.lastLatencyMs ?? 0,
       lastTestedAt: widget.server?.lastTestedAt,
@@ -292,6 +401,7 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
         ServerProtocol.vless => 'VLESS',
         ServerProtocol.vmess => 'VMess',
         ServerProtocol.shadowsocks => 'Shadowsocks',
+        ServerProtocol.trojan => 'Trojan',
         ServerProtocol.socks5 => 'SOCKS5',
         ServerProtocol.http => 'HTTP Proxy',
         ServerProtocol.ssh => 'SSH Tunnel',
@@ -303,6 +413,7 @@ class _TlsSection extends StatelessWidget {
     required this.enabled,
     required this.allowInsecure,
     required this.serverName,
+    required this.fingerprint,
     required this.onEnabled,
     required this.onAllowInsecure,
   });
@@ -310,6 +421,7 @@ class _TlsSection extends StatelessWidget {
   final bool enabled;
   final bool allowInsecure;
   final TextEditingController serverName;
+  final TextEditingController fingerprint;
   final ValueChanged<bool> onEnabled;
   final ValueChanged<bool> onAllowInsecure;
 
@@ -327,10 +439,19 @@ class _TlsSection extends StatelessWidget {
         if (enabled) ...[
           TextFormField(
             controller: serverName,
-            textInputAction: TextInputAction.done,
+            textInputAction: TextInputAction.next,
             decoration: const InputDecoration(
               labelText: 'Server name (SNI)',
               helperText: 'Leave empty to use the address',
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextFormField(
+            controller: fingerprint,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: 'TLS fingerprint',
+              helperText: 'Optional, e.g. chrome',
             ),
           ),
           const SizedBox(height: 8),
@@ -342,6 +463,79 @@ class _TlsSection extends StatelessWidget {
               'Disables certificate validation — use only for testing.',
             ),
             contentPadding: EdgeInsets.zero,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Stream transport for vless/vmess/trojan outbounds. Phase 1 supports plain
+/// TCP and WebSocket; the visual builder generates the sing-box `transport`.
+class _TransportSection extends StatelessWidget {
+  const _TransportSection({
+    required this.visible,
+    required this.transport,
+    required this.path,
+    required this.host,
+    required this.onChanged,
+  });
+
+  final bool visible;
+  final TransportType transport;
+  final TextEditingController path;
+  final TextEditingController host;
+  final ValueChanged<TransportType> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!visible) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 4),
+        Text(
+          'Transport',
+          style: Theme.of(context)
+              .textTheme
+              .titleSmall
+              ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<TransportType>(
+          segments: const [
+            ButtonSegment(
+              value: TransportType.tcp,
+              label: Text('TCP'),
+              icon: Icon(Icons.link),
+            ),
+            ButtonSegment(
+              value: TransportType.ws,
+              label: Text('WebSocket'),
+              icon: Icon(Icons.cloud_outlined),
+            ),
+          ],
+          selected: {transport},
+          onSelectionChanged: (selection) => onChanged(selection.first),
+        ),
+        if (transport == TransportType.ws) ...[
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: path,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: 'WebSocket path',
+              helperText: 'e.g. /vpnjantit',
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: host,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: 'WebSocket host',
+              helperText: 'Host header sent by the client',
+            ),
           ),
         ],
       ],

@@ -125,6 +125,107 @@ func TestBuildTLS(t *testing.T) {
 	}
 }
 
+func TestBuildWebSocketTransport(t *testing.T) {
+	built, err := buildOptions(Options{
+		Mode:     ModeProxy,
+		LogLevel: LevelInfo,
+		Outbound: Outbound{
+			Protocol:       ProtocolVMess,
+			Address:        "203.0.113.10",
+			Port:           443,
+			UUID:           "11111111-2222-3333-4444-555555555555",
+			Security:       "auto",
+			GlobalPadding:  true,
+			PacketEncoding: "xudp",
+			TLS: &TLSSettings{
+				ServerName:  "www.example.com",
+				Fingerprint: "chrome",
+			},
+			Transport: &TransportSettings{
+				Type: TransportWS,
+				Path: "/vpnjantit",
+				Host: "www.nagwa.com.dpdns.org",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ob := built.Outbounds[1]
+	if ob.Type != C.TypeVMess {
+		t.Fatalf("want vmess outbound, got %q", ob.Type)
+	}
+	opts := ob.Options.(*option.VMessOutboundOptions)
+	if opts.Transport == nil {
+		t.Fatal("expected ws transport")
+	}
+	if opts.Transport.Type != C.V2RayTransportTypeWebsocket {
+		t.Fatalf("want websocket transport, got %q", opts.Transport.Type)
+	}
+	ws := opts.Transport.WebsocketOptions
+	if ws.Path != "/vpnjantit" {
+		t.Fatalf("unexpected path %q", ws.Path)
+	}
+	hosts, ok := ws.Headers["Host"]
+	if !ok || len(hosts) != 1 || hosts[0] != "www.nagwa.com.dpdns.org" {
+		t.Fatalf("unexpected ws host header %v", ws.Headers)
+	}
+	if !opts.GlobalPadding {
+		t.Fatal("global padding lost")
+	}
+	if opts.PacketEncoding != "xudp" {
+		t.Fatalf("unexpected packet encoding %q", opts.PacketEncoding)
+	}
+	if opts.TLS == nil || opts.TLS.UTLS == nil || opts.TLS.UTLS.Fingerprint != "chrome" {
+		t.Fatalf("expected utls fingerprint chrome, got %+v", opts.TLS)
+	}
+}
+
+func TestBuildWebSocketTransportDisabled(t *testing.T) {
+	built, err := buildOptions(Options{
+		Mode:     ModeProxy,
+		LogLevel: LevelInfo,
+		Outbound: Outbound{
+			Protocol: ProtocolVLESS,
+			Address:  "203.0.113.10",
+			Port:     443,
+			UUID:     "11111111-2222-3333-4444-555555555555",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := built.Outbounds[1].Options.(*option.VLESSOutboundOptions)
+	if opts.Transport != nil {
+		t.Fatalf("expected no transport, got %+v", opts.Transport)
+	}
+}
+
+func TestBuildTrojanOutbound(t *testing.T) {
+	built, err := buildOptions(Options{
+		Mode:     ModeProxy,
+		LogLevel: LevelInfo,
+		Outbound: Outbound{
+			Protocol: ProtocolTrojan,
+			Address:  "203.0.113.10",
+			Port:     443,
+			Password: "trojan-pass",
+			TLS:      &TLSSettings{ServerName: "edge.example.com"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ob := built.Outbounds[1]
+	if ob.Type != C.TypeTrojan {
+		t.Fatalf("want trojan outbound, got %q", ob.Type)
+	}
+	opts := ob.Options.(*option.TrojanOutboundOptions)
+	if opts.Password != "trojan-pass" {
+		t.Fatalf("unexpected password %q", opts.Password)
+	}
+}
+
 func TestConfigJSONRoundTrip(t *testing.T) {
 	built, err := buildOptions(Options{
 		Mode:     ModeProxy,

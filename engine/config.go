@@ -26,16 +26,37 @@ const (
 	ProtocolVLESS       Protocol = "vless"
 	ProtocolVMess       Protocol = "vmess"
 	ProtocolShadowsocks Protocol = "shadowsocks"
+	ProtocolTrojan      Protocol = "trojan"
 	ProtocolSOCKS       Protocol = "socks"
 	ProtocolHTTP        Protocol = "http"
 	ProtocolSSH         Protocol = "ssh"
 )
 
+// Transport is the outbound stream transport for protocols that support one
+// (vless / vmess / trojan). The empty value means a plain TCP connection.
+type Transport string
+
+const (
+	TransportTCP Transport = ""
+	TransportWS  Transport = "ws"
+)
+
+// TransportSettings configures an outbound transport. Only the WebSocket
+// transport is wired to sing-box today; gRPC / HTTPUpgrade are parser seams.
+type TransportSettings struct {
+	Type                Transport
+	Path                string // ws path, e.g. /vpnjantit
+	Host                string // ws Host header
+	MaxEarlyData        uint32
+	EarlyDataHeaderName string
+}
+
 // TLSSettings configures TLS for outbounds that support it.
 type TLSSettings struct {
-	ServerName string
-	Insecure   bool
-	ALPN       []string
+	ServerName  string
+	Insecure    bool
+	ALPN        []string
+	Fingerprint string // utls fingerprint, e.g. "chrome"
 }
 
 // SSHSettings configures the SSH outbound.
@@ -54,14 +75,19 @@ type Outbound struct {
 	Port     uint16
 
 	Username string // socks / http / ssh user
-	Password string // socks / http / shadowsocks password
+	Password string // socks / http / shadowsocks / trojan password
 	Cipher   string // shadowsocks method, e.g. aes-128-gcm
 	UUID     string // vless / vmess
 	Flow     string // vless flow, e.g. xtls-rprx-vision
 	Security string // vmess security: auto | none | aes-128-gcm | chacha20-poly1305
 
-	TLS *TLSSettings
-	SSH *SSHSettings
+	// GlobalPadding and PacketEncoding apply to UDP-over-WS (vmess/vless).
+	GlobalPadding  bool
+	PacketEncoding string // "xudp", "packet" or ""
+
+	TLS       *TLSSettings
+	SSH       *SSHSettings
+	Transport *TransportSettings
 }
 
 // ProxyOptions configures the ModeProxy inbound.
@@ -220,6 +246,11 @@ func buildOutbound(ob Outbound) option.Outbound {
 	server := option.ServerOptions{Server: ob.Address, ServerPort: ob.Port}
 	switch ob.Protocol {
 	case ProtocolVLESS:
+		var packetEncoding *string
+		if ob.PacketEncoding != "" {
+			pe := ob.PacketEncoding
+			packetEncoding = &pe
+		}
 		return option.Outbound{
 			Type: C.TypeVLESS,
 			Tag:  "proxy",
@@ -227,7 +258,9 @@ func buildOutbound(ob Outbound) option.Outbound {
 				ServerOptions:               server,
 				UUID:                        ob.UUID,
 				Flow:                        ob.Flow,
+				PacketEncoding:              packetEncoding,
 				OutboundTLSOptionsContainer: tlsContainer(ob.TLS),
+				Transport:                   buildTransport(ob.Transport),
 			},
 		}
 	case ProtocolVMess:
@@ -242,7 +275,21 @@ func buildOutbound(ob Outbound) option.Outbound {
 				ServerOptions:               server,
 				UUID:                        ob.UUID,
 				Security:                    security,
+				GlobalPadding:               ob.GlobalPadding,
+				PacketEncoding:              ob.PacketEncoding,
 				OutboundTLSOptionsContainer: tlsContainer(ob.TLS),
+				Transport:                   buildTransport(ob.Transport),
+			},
+		}
+	case ProtocolTrojan:
+		return option.Outbound{
+			Type: C.TypeTrojan,
+			Tag:  "proxy",
+			Options: &option.TrojanOutboundOptions{
+				ServerOptions:               server,
+				Password:                    ob.Password,
+				OutboundTLSOptionsContainer: tlsContainer(ob.TLS),
+				Transport:                   buildTransport(ob.Transport),
 			},
 		}
 	case ProtocolShadowsocks:
@@ -306,12 +353,38 @@ func tlsContainer(tlsCfg *TLSSettings) option.OutboundTLSOptionsContainer {
 	if tlsCfg == nil {
 		return option.OutboundTLSOptionsContainer{}
 	}
-	return option.OutboundTLSOptionsContainer{
-		TLS: &option.OutboundTLSOptions{
-			Enabled:    true,
-			ServerName: tlsCfg.ServerName,
-			Insecure:   tlsCfg.Insecure,
-			ALPN:       badoption.Listable[string](tlsCfg.ALPN),
-		},
+	tlsOpts := &option.OutboundTLSOptions{
+		Enabled:    true,
+		ServerName: tlsCfg.ServerName,
+		Insecure:   tlsCfg.Insecure,
+		ALPN:       badoption.Listable[string](tlsCfg.ALPN),
+	}
+	if tlsCfg.Fingerprint != "" {
+		tlsOpts.UTLS = &option.OutboundUTLSOptions{Fingerprint: tlsCfg.Fingerprint}
+	}
+	return option.OutboundTLSOptionsContainer{TLS: tlsOpts}
+}
+
+// buildTransport maps outbound transport settings onto sing-box options. Only
+// the WebSocket transport is supported; any other non-empty transport yields nil
+// (plain TCP), and unrecognised transports are surfaced at validation time by
+// the core rather than here.
+func buildTransport(t *TransportSettings) *option.V2RayTransportOptions {
+	if t == nil || t.Type != TransportWS {
+		return nil
+	}
+	ws := option.V2RayWebsocketOptions{
+		Path:                t.Path,
+		MaxEarlyData:        t.MaxEarlyData,
+		EarlyDataHeaderName: t.EarlyDataHeaderName,
+	}
+	if t.Host != "" {
+		ws.Headers = badoption.HTTPHeader{
+			"Host": badoption.Listable[string]{t.Host},
+		}
+	}
+	return &option.V2RayTransportOptions{
+		Type:             C.V2RayTransportTypeWebsocket,
+		WebsocketOptions: ws,
 	}
 }

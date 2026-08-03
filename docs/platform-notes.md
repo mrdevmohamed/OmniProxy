@@ -7,6 +7,7 @@ Per-platform details for the Flutter ↔ Go bridge, TUN/privileges, and native g
 - One internal API contract (`docs/api-contract.md`) on every platform; bridges are pure transport.
 - Shared `.onnproxy` export format so profiles move between platforms cleanly.
 - Platform limitations must be surfaced in the UI, never silently degraded.
+- **Logging:** the logger's minimum level starts from the init config (`logLevel`, platform default `info`) and is re-applied at runtime whenever `updateSettings` changes `AppSettings.logLevel`. The Logs screen is a live view over `logAppended` events with a `getLogs` backfill (deduped by `seq`); core redacts credentials/keys/raw traffic before they reach the ring.
 
 ## Android
 

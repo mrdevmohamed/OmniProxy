@@ -91,6 +91,42 @@ class SettingsScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 16),
               _Section(
+                title: 'Diagnostics',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _SettingHeader(
+                      icon: Icons.terminal_outlined,
+                      title: 'Log level',
+                      subtitle:
+                          'Minimum level shown in the Logs screen and written '
+                          'to core logs. Verbose levels are useful when '
+                          'troubleshooting a connection.',
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonHideUnderline(
+                      child: DropdownButton<LogLevel>(
+                        value: settings.logLevel,
+                        items: [
+                          for (final level in LogLevel.values)
+                            DropdownMenuItem<LogLevel>(
+                              value: level,
+                              child: Text(_logLevelLabel(level)),
+                            ),
+                        ],
+                        onChanged: (level) {
+                          if (level != null) {
+                            notifier.update(
+                                settings.copyWith(logLevel: level));
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _Section(
                 title: 'About',
                 child: version.when(
                   loading: () => const Padding(
@@ -132,6 +168,14 @@ class SettingsScreen extends ConsumerWidget {
     );
   }
 }
+
+String _logLevelLabel(LogLevel level) => switch (level) {
+      LogLevel.trace => 'Trace',
+      LogLevel.debug => 'Debug',
+      LogLevel.info => 'Info',
+      LogLevel.warn => 'Warn',
+      LogLevel.error => 'Error',
+    };
 
 class _Section extends StatelessWidget {
   const _Section({required this.title, required this.child});

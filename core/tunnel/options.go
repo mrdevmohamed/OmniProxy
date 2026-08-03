@@ -29,12 +29,17 @@ func BuildEngineOptions(p *models.ServerProfile, mode models.ConnectionMode, log
 
 func buildOutbound(p *models.ServerProfile) engine.Outbound {
 	ob := engine.Outbound{
-		Address:  p.Address,
-		Port:     uint16(p.Port),
-		Username: p.Username,
-		Password: p.Password,
-		Cipher:   p.Cipher,
-		UUID:     p.UUID,
+		Address:        p.Address,
+		Port:           uint16(p.Port),
+		Username:       p.Username,
+		Password:       p.Password,
+		Cipher:         p.Cipher,
+		UUID:           p.UUID,
+		Flow:           p.Flow,
+		Security:       p.Security,
+		GlobalPadding:  p.GlobalPadding,
+		PacketEncoding: p.PacketEncoding,
+		Transport:      transportIfEnabled(p.Transport),
 	}
 	switch p.Protocol {
 	case models.ProtocolVLESS:
@@ -45,6 +50,9 @@ func buildOutbound(p *models.ServerProfile) engine.Outbound {
 		ob.TLS = tlsIfEnabled(p)
 	case models.ProtocolShadowsocks:
 		ob.Protocol = engine.ProtocolShadowsocks
+	case models.ProtocolTrojan:
+		ob.Protocol = engine.ProtocolTrojan
+		ob.TLS = tlsIfEnabled(p)
 	case models.ProtocolSOCKS5:
 		ob.Protocol = engine.ProtocolSOCKS
 	case models.ProtocolHTTP:
@@ -61,13 +69,27 @@ func buildOutbound(p *models.ServerProfile) engine.Outbound {
 	return ob
 }
 
+func transportIfEnabled(t *models.TransportConfig) *engine.TransportSettings {
+	if t == nil {
+		return nil
+	}
+	return &engine.TransportSettings{
+		Type:                engine.Transport(t.Type),
+		Path:                t.Path,
+		Host:                t.Host,
+		MaxEarlyData:        t.MaxEarlyData,
+		EarlyDataHeaderName: t.EarlyDataHeaderName,
+	}
+}
+
 func tlsIfEnabled(p *models.ServerProfile) *engine.TLSSettings {
 	if !p.TLS.Enabled {
 		return nil
 	}
 	return &engine.TLSSettings{
-		ServerName: p.TLS.ServerName,
-		Insecure:   p.TLS.AllowInsecure,
-		ALPN:       p.TLS.ALPN,
+		ServerName:  p.TLS.ServerName,
+		Insecure:    p.TLS.AllowInsecure,
+		ALPN:        p.TLS.ALPN,
+		Fingerprint: p.TLS.Fingerprint,
 	}
 }

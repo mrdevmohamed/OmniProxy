@@ -66,15 +66,15 @@ type ImportError struct {
 	Message string `json:"message"`
 }
 
-// ImportServers parses an onnproxy blob (single envelope or array), assigns
-// fresh ids (imports never collide with existing profiles), and persists each
-// valid profile. Returns added/failed counts and per-item errors. A blob that
-// is not valid onnproxy at all is reported as one failed item.
+// ImportServers parses an onnproxy blob (single envelope or array) or a
+// multi-line payload of native share links (vmess:// vless:// ss:// trojan://
+// socks5:// http://), assigns fresh ids (imports never collide with existing
+// profiles), and persists each valid profile. Returns added/failed counts and
+// per-item errors; a blob that is neither valid onnproxy nor a parseable link
+// is reported as one failed item.
 func (m *Manager) ImportServers(data string) (added int, failed int, errs []ImportError, err error) {
-	profiles, err := ParseEnvelopes([]byte(data))
-	if err != nil {
-		return 0, 1, []ImportError{{Message: err.Error()}}, nil
-	}
+	profiles, errs := ParseImportData(data)
+	failed = len(errs)
 	for i, p := range profiles {
 		p.ID = ""
 		p.CreatedAt, p.UpdatedAt = time.Time{}, time.Time{}

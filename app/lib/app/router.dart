@@ -6,7 +6,8 @@ import 'package:flutter/material.dart';
 enum ShellDestination {
   dashboard(0, 'Dashboard', Icons.dashboard_outlined, Icons.dashboard),
   servers(1, 'Servers', Icons.dns_outlined, Icons.dns),
-  settings(2, 'Settings', Icons.settings_outlined, Icons.settings);
+  logs(2, 'Logs', Icons.terminal_outlined, Icons.terminal),
+  settings(3, 'Settings', Icons.settings_outlined, Icons.settings);
 
   const ShellDestination(
     this.tab,

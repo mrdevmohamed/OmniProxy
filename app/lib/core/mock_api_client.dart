@@ -105,7 +105,7 @@ class MockApiClient implements ApiClient {
     if (_logs.length > 200) _logs.removeRange(0, _logs.length - 200);
     _emit(AppEvent(
       type: 'logAppended',
-      data: {'log': _logs.last.toJson()},
+      data: _logs.last.toJson(),
     ));
   }
 

@@ -86,6 +86,7 @@ enum ServerProtocol {
   vless('vless'),
   vmess('vmess'),
   shadowsocks('shadowsocks'),
+  trojan('trojan'),
   socks5('socks5'),
   http('http'),
   ssh('ssh');
@@ -102,6 +103,58 @@ enum ServerProtocol {
   }
 }
 
+/// Stream transports for vless/vmess/trojan outbounds — §2.1.
+enum TransportType {
+  tcp(''),
+  ws('ws');
+
+  const TransportType(this.wire);
+
+  final String wire;
+
+  static TransportType fromWire(String? value) {
+    for (final type in TransportType.values) {
+      if (type.wire == value) return type;
+    }
+    return TransportType.tcp;
+  }
+}
+
+/// `ServerProfile.transport` — §2.1. Only WebSocket is wired in Phase 1.
+class TransportSettings {
+  const TransportSettings({
+    this.type = TransportType.tcp,
+    this.path,
+    this.host,
+    this.maxEarlyData = 0,
+    this.earlyDataHeaderName,
+  });
+
+  final TransportType type;
+  final String? path;
+  final String? host;
+  final int maxEarlyData;
+  final String? earlyDataHeaderName;
+
+  factory TransportSettings.fromJson(Map<String, dynamic> json) =>
+      TransportSettings(
+        type: TransportType.fromWire(json['type'] as String?),
+        path: json['path'] as String?,
+        host: json['host'] as String?,
+        maxEarlyData: json['maxEarlyData'] as int? ?? 0,
+        earlyDataHeaderName: json['earlyDataHeaderName'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (type != TransportType.tcp) 'type': type.wire,
+        if (path != null) 'path': path,
+        if (host != null) 'host': host,
+        if (maxEarlyData != 0) 'maxEarlyData': maxEarlyData,
+        if (earlyDataHeaderName != null)
+          'earlyDataHeaderName': earlyDataHeaderName,
+      };
+}
+
 /// `ServerProfile.tls` — `docs/api-contract.md` §2.1.
 class TlsSettings {
   const TlsSettings({
@@ -109,12 +162,14 @@ class TlsSettings {
     this.allowInsecure = false,
     this.serverName,
     this.alpn,
+    this.fingerprint,
   });
 
   final bool enabled;
   final bool allowInsecure;
   final String? serverName;
   final List<String>? alpn;
+  final String? fingerprint;
 
   factory TlsSettings.fromJson(Map<String, dynamic> json) => TlsSettings(
         enabled: json['enabled'] == true,
@@ -123,6 +178,7 @@ class TlsSettings {
         alpn: json['alpn'] == null
             ? null
             : (json['alpn'] as List<dynamic>).cast<String>(),
+        fingerprint: json['fingerprint'] as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -130,6 +186,7 @@ class TlsSettings {
         'allowInsecure': allowInsecure,
         'serverName': serverName,
         if (alpn != null) 'alpn': alpn,
+        if (fingerprint != null) 'fingerprint': fingerprint,
       };
 }
 
@@ -166,8 +223,13 @@ class ServerProfile {
     this.password,
     this.cipher,
     this.uuid,
+    this.flow,
+    this.security,
     this.tls = const TlsSettings(),
     this.ssh = const SshSettings(),
+    this.transport,
+    this.globalPadding = false,
+    this.packetEncoding,
     this.favorite = false,
     this.lastLatencyMs = 0,
     this.lastTestedAt,
@@ -184,8 +246,13 @@ class ServerProfile {
   final String? password;
   final String? cipher;
   final String? uuid;
+  final String? flow;
+  final String? security;
   final TlsSettings tls;
   final SshSettings ssh;
+  final TransportSettings? transport;
+  final bool globalPadding;
+  final String? packetEncoding;
   final bool favorite;
   final int lastLatencyMs;
   final DateTime? lastTestedAt;
@@ -202,8 +269,13 @@ class ServerProfile {
     String? password,
     String? cipher,
     String? uuid,
+    String? flow,
+    String? security,
     TlsSettings? tls,
     SshSettings? ssh,
+    TransportSettings? transport,
+    bool? globalPadding,
+    String? packetEncoding,
     bool? favorite,
     int? lastLatencyMs,
     DateTime? lastTestedAt,
@@ -220,8 +292,13 @@ class ServerProfile {
         password: password ?? this.password,
         cipher: cipher ?? this.cipher,
         uuid: uuid ?? this.uuid,
+        flow: flow ?? this.flow,
+        security: security ?? this.security,
         tls: tls ?? this.tls,
         ssh: ssh ?? this.ssh,
+        transport: transport ?? this.transport,
+        globalPadding: globalPadding ?? this.globalPadding,
+        packetEncoding: packetEncoding ?? this.packetEncoding,
         favorite: favorite ?? this.favorite,
         lastLatencyMs: lastLatencyMs ?? this.lastLatencyMs,
         lastTestedAt: lastTestedAt ?? this.lastTestedAt,
@@ -239,12 +316,20 @@ class ServerProfile {
         password: json['password'] as String?,
         cipher: json['cipher'] as String?,
         uuid: json['uuid'] as String?,
+        flow: json['flow'] as String?,
+        security: json['security'] as String?,
         tls: json['tls'] == null
             ? const TlsSettings()
             : TlsSettings.fromJson(json['tls'] as Map<String, dynamic>),
         ssh: json['ssh'] == null
             ? const SshSettings()
             : SshSettings.fromJson(json['ssh'] as Map<String, dynamic>),
+        transport: json['transport'] == null
+            ? null
+            : TransportSettings.fromJson(
+                json['transport'] as Map<String, dynamic>),
+        globalPadding: json['globalPadding'] == true,
+        packetEncoding: json['packetEncoding'] as String?,
         favorite: json['favorite'] == true,
         lastLatencyMs: json['lastLatencyMs'] as int? ?? 0,
         lastTestedAt: json['lastTestedAt'] == null
@@ -264,8 +349,13 @@ class ServerProfile {
         'password': password,
         'cipher': cipher,
         'uuid': uuid,
+        'flow': flow,
+        'security': security,
         'tls': tls.toJson(),
         'ssh': ssh.toJson(),
+        if (transport != null) 'transport': transport!.toJson(),
+        if (globalPadding) 'globalPadding': globalPadding,
+        if (packetEncoding != null) 'packetEncoding': packetEncoding,
         'favorite': favorite,
         'lastLatencyMs': lastLatencyMs,
         'lastTestedAt': lastTestedAt?.toUtc().toIso8601String(),
