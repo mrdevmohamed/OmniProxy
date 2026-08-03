@@ -2,6 +2,7 @@ package com.omniproxy.omniproxy
 
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
@@ -22,8 +23,20 @@ class OmniProxyVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // No startForeground here: the system renders the persistent,
-        // non-dismissible VPN banner for an established VpnService.
+        // Started via startForegroundService() (MainActivity), so startForeground()
+        // must run promptly or the system throws a
+        // ForegroundServiceDidNotStartInTimeException. The system additionally
+        // renders the persistent, non-dismissible VPN banner once establish() succeeds.
+        val notification = Notifications.build(this, "Connecting…")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                Notifications.NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            startForeground(Notifications.NOTIFICATION_ID, notification)
+        }
         Bridge.ensureInit(applicationContext)
         Bridge.vpnServiceActive = true
 
