@@ -1,30 +1,106 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:omniproxy/main.dart';
+import 'package:omniproxy/app/app_root.dart';
+import 'package:omniproxy/core/models.dart';
+import 'package:omniproxy/core/mock_api_client.dart';
+import 'package:omniproxy/features/settings/settings_screen.dart';
+import 'package:omniproxy/state/providers.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  ProviderScope buildApp({MockApiClient? client}) {
+    return ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(client ?? MockApiClient()),
+      ],
+      child: const OmniProxyApp(),
+    );
+  }
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  testWidgets('dashboard shows disconnected status and seeded servers',
+      (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('Disconnected'), findsWidgets);
+    expect(find.text('Ready to connect'), findsOneWidget);
+    expect(find.text('Connect'), findsOneWidget);
+  });
+
+  testWidgets('connect flow transitions to connected and back',
+      (tester) async {
+    final client = MockApiClient(connectDelay: const Duration(milliseconds: 500));
+    await tester.pumpWidget(buildApp(client: client));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Connect'));
     await tester.pump();
+    expect(find.text('Connecting'), findsWidgets);
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Connected'), findsWidgets);
+    expect(find.text('Disconnect'), findsOneWidget);
+    expect(find.text('Tokyo Relay'), findsOneWidget);
+
+    await tester.tap(find.text('Disconnect'));
+    await tester.pump();
+    expect(find.text('Disconnected'), findsWidgets);
+  });
+
+  testWidgets('servers tab lists seeded servers', (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Servers'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Tokyo Relay'), findsOneWidget);
+    expect(find.text('Frankfurt Shadowsocks'), findsOneWidget);
+    expect(find.text('Local HTTP'), findsOneWidget);
+    expect(find.text('Add server'), findsOneWidget);
+  });
+
+  testWidgets('servers tab opens add form and saves a new server',
+      (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Servers'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Add server'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+        find.widgetWithText(TextFormField, 'Name'), 'New Server');
+    await tester.enterText(
+        find.widgetWithText(TextFormField, 'Address'), 'new.example.com');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Port'), '443');
+    await tester.enterText(find.widgetWithText(TextFormField, 'UUID'),
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Add server'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('New Server'), findsOneWidget);
+  });
+
+  testWidgets('settings tab switches connection mode', (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Default mode'), findsOneWidget);
+    await tester.tap(find.text('Proxy'));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(SettingsScreen)));
+    expect(container.read(settingsProvider).connectionMode,
+        ConnectionMode.proxy);
   });
 }

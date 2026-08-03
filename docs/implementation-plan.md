@@ -1,7 +1,7 @@
 # OmniProxy — Phase 1 (MVP) Implementation Plan
 
 **Source of truth:** `PRD.md` · **Companion specs:** `docs/api-contract.md`, `docs/platform-notes.md`
-**Status:** Phase 1 in progress (Milestone 4 of 9)
+**Status:** Phase 1 in progress (Milestone 5 of 9)
 
 ## 1. Goals & scope
 
@@ -87,7 +87,7 @@ Bridges are **pure transport only** — no platform business logic (PRD §7.2).
 2. **Core: models + Config Engine + Server Manager + logging** — 4 Phase-1 models, encrypt-at-rest persistence, CRUD/import/export/favorites, redacting logger. Unit tests alongside.
 3. **Engine module** — pinned v1.13.15; config builders (VLESS/VMess/SOCKS5/HTTP/SSH/Shadowsocks outbound; TUN + mixed-loopback inbounds), `Start`/`Close`, log-sink adapter, minimal protocol registry, optional platform hook; e2e routing test through a local SOCKS5 test server. *(Latency via core TCP-dial; URL-test deferred.)*
 4. **Core: Tunnel Manager + VPN Service + facade** — state machine (Disconnected/Connecting/Connected/Reconnecting/Error), connect/disconnect, reconnect w/ backoff, `VPNSession` tracking; core test suite green. *(Auto-reconnect retries failed starts up to the retry policy cap; `reconnect` re-establishes the live session. `deleteServer`/`updateServer` are rejected while connected to that server.)* **Check-in.**
-5. **Flutter shell** — M3 theme, responsive nav, Dashboard + Server Manager + Settings (theme, connection mode) wired to a mocked `ApiClient`. **Check-in.**
+5. **Flutter shell** — M3 theme, responsive nav, Dashboard + Server Manager + Settings (theme, connection mode) wired to a mocked `ApiClient`. **Check-in.** *(M5 submitted: `app/lib/` organized as `app/` (theme/router/AppRoot) + `core/` (contract models, `ApiClient`, `MockApiClient`, pure-transport bridge stubs for M6–M8) + `state/` (Riverpod 3 providers) + `features/` (dashboard/servers/settings). Dashboard = status/server/duration/connect only; server CRUD/import/export/latency/favorites via contract methods; settings persist via `updateSettings`. `flutter analyze` + `flutter test` + `flutter build linux` green. Riverpod 3 manual providers — no codegen.)*
 6. **Linux bridge E2E** — c-shared lib + dart:ffi + pkexec helper; real connect/disconnect against a local test server. **Check-in.**
 7. **Android bridge E2E** — gomobile bind → `.aar`, Kotlin MethodChannel host, `VpnProxyService` + `VpnService` (TUN) and proxy mode, persistent notification; verify both modes on `light_emulator`. **Check-in.**
 8. **Windows bridge** — code-complete FFI + Wintun bundling; documented untested.
