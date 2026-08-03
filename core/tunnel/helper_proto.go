@@ -11,9 +11,9 @@ import (
 
 // Re-exported wire types (defined once in helperproto).
 type (
-	ClientMessage    = helperproto.ClientMessage
-	ServerMessage    = helperproto.ServerMessage
-	HelperLogEvent   = helperproto.HelperLogEvent
+	ClientMessage  = helperproto.ClientMessage
+	ServerMessage  = helperproto.ServerMessage
+	HelperLogEvent = helperproto.HelperLogEvent
 )
 
 // helperSocketName is the control socket file name under

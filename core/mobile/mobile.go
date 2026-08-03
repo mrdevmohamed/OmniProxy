@@ -1,3 +1,5 @@
+//go:build android
+
 // Package mobile is the gomobile bind entry point for Android
 // (docs/api-contract.md §5.1). The Kotlin host calls these functions through
 // the generated `.aar`; events are buffered in a ring and drained on a poller
@@ -10,6 +12,9 @@
 //
 //	-tags with_gvisor -target=android -javapkg=com.omniproxy.bind \
 //	-o app/android/app/libs/omniproxy.aar ./core/mobile
+//
+// Android-only: SetTunFd feeds the VpnService TUN fd through the engine's
+// Linux/Android FdTunPlatform hook.
 package mobile
 
 import (

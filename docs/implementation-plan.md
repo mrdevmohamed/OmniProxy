@@ -90,7 +90,7 @@ Bridges are **pure transport only** — no platform business logic (PRD §7.2).
 5. **Flutter shell** — M3 theme, responsive nav, Dashboard + Server Manager + Settings (theme, connection mode) wired to a mocked `ApiClient`. **Check-in.** *(M5 submitted: `app/lib/` organized as `app/` (theme/router/AppRoot) + `core/` (contract models, `ApiClient`, `MockApiClient`, pure-transport bridge stubs for M6–M8) + `state/` (Riverpod 3 providers) + `features/` (dashboard/servers/settings). Dashboard = status/server/duration/connect only; server CRUD/import/export/latency/favorites via contract methods; settings persist via `updateSettings`. `flutter analyze` + `flutter test` + `flutter build linux` green. Riverpod 3 manual providers — no codegen.)*
 6. **Linux bridge E2E** — c-shared lib + dart:ffi + pkexec helper; real connect/disconnect against a local test server. **Check-in.** *(M6 submitted: `core/glue` c-shared ABI (`omniproxy_init`/`omniproxy_request`/`omniproxy_poll_events`/`omniproxy_shutdown`/`omniproxy_free_string`); `core/tunnel/helper_client.go` helper-aware runner (proxy → in-process, VPN → pkexec helper via Unix socket JSON, seq-correlated) + `core/tunnel/helperhost` privileged engine-hosting server; `core/cmd/omniproxy-helper` pkexec entry point; `tools/build_linux.sh` → `core/out/{libomniproxy.so,omniproxy-helper}`; Dart `LinuxBridge` (dart:ffi, event polling — a native event callback deadlocks while the isolate is blocked in a synchronous FFI request) + full `ApiClient` over the transport; `linux/CMakeLists.txt` bundles both artifacts; E2E test drives a real SOCKS5 client → engine mixed inbound → SOCKS5 outbound → local SOCKS5 test server → echo, all green; `flutter analyze`/`flutter test`/`flutter build linux` green. `core` and `engine` test suites green.)*
 7. **Android bridge E2E** — gomobile bind → `.aar`, Kotlin MethodChannel host, `VpnProxyService` + `VpnService` (TUN) and proxy mode, persistent notification; verify both modes on `light_emulator`. **Check-in.** *(M7 submitted: `core/tunnel/runner.go`/`manager.go` `PlatformSetter`, `core/mobile` gomobile entry (`SetTunFd`, ring-based event poll), Kotlin `Bridge.kt` MethodChannel host (HandlerThread 25 ms poll) + `MainActivity`/`OmniProxyVpnService`/`VpnProxyService`, `.aar` linked from `app/android/app/libs/` (gitignored). API 36: `setSession` (VpnService `setName` removed). `engine/platform_fd.go` `FdTunPlatform` feeds the VpnService TUN fd into sing-tun and returns a **passive** default-interface monitor (`engine/platform_monitor.go`) — sing-box nil-derefs without one and netlink monitors are banned on Android; TUN inbound also drops the legacy `sniff` field rejected by sing-box 1.13.0. Device E2E `integration_test/bridge_e2e_test.dart` drives proxy mode and VPN mode through the consent dialog (guarded by `--dart-define=OMNIPROXY_VPN_E2E=true`); both green on device `2eb95e94`. `flutter analyze`/`flutter test`/`flutter build apk --debug` green; `engine`/`core` suites green.)*
- 8. **Windows bridge** — code-complete FFI + Wintun bundling; documented untested.
+ 8. **Windows bridge** — code-complete FFI + Wintun bundling; documented untested. *(M8 build validation: the core DLL now cross-compiles from the Linux host — `engine/tun_name.go`/`platform_fd.go`/`platform_monitor.go` gained `//go:build linux || android` (they use Linux-only ioctls/syscalls), and `core/mobile` is `//go:build android`. `make windows-core` produces `omniproxy.dll` + `wintun.dll` via mingw-w64; the Flutter Windows app bundle still requires a Windows host/CI.)*
  9. **Share links + WebSocket transport + Logs screen** — core imports vmess/vless/ss/trojan/socks/http links (incl. WS-based links), engine gains WS transport + uTLS fingerprint, UI adds a live Logs screen and richer server form. **Check-in.** *(M9 submitted: `engine/config.go` — `Transport`/`TransportSettings` (WS path/Host/maxEarlyData/earlyDataHeaderName), `TLSSettings.Fingerprint` (uTLS), `ProtocolTrojan`, outbound `GlobalPadding`/`PacketEncoding`, wired into VLESS/VMess/Trojan builders; `core/server/links.go` — `ParseImportData` (onnproxy JSON **or** multi-line share links) + `ParseLink` for `vmess://` (base64 JSON + SIP002 fallback), `vless://`, `ss://` (SIP002 + legacy), `trojan://`, `socks5/socks`, `http`; rejects grpc/h2/httpupgrade/quic + reality, per-line `ImportError`s; `ImportServers` dispatches through it. `core/models/server.go` — `TransportType`/`TransportConfig`, `TLSConfig.Fingerprint`, `flow`/`security`/`globalPadding`/`packetEncoding`, `ProtocolTrojan`; `core/tunnel/options.go` maps all into the engine config. Dart: `models.dart` mirrors the new fields; server form gained protocol-specific sections (flow/security/global-padding/packet-encoding), WS transport section, TLS fingerprint, trojan password; import dialog shows per-line errors. New `LogsScreen` (`features/logs/`) backed by `logsProvider` (`logAppended` stream + `getLogs` backfill, deduped by seq) with level filter/clear/refresh; Logs tab added to the shell; Settings gained a log-level control. `engine`/`core` suites green; `flutter analyze` + `flutter test` (7 widget tests incl. logs tab) green; widget tests fixed to scroll the taller server form.)*
  10. **Security review + polish + README + final commit.**
 
@@ -109,15 +109,20 @@ Bridges are **pure transport only** — no platform business logic (PRD §7.2).
 
 ## 8. Build / test / lint commands
 
-See `README.md` for the full set. Summary:
+See `README.md` for the full set. The repo-root `Makefile` drives it all:
 
 ```bash
-# Go core + engine
+make check           # go build/vet/gofmt (core + engine) + flutter analyze
+make test            # go test (core + engine) + flutter test
+make build           # Android release APK + Linux release bundle + Windows DLL
+make build-native    # Android + Linux only
+make e2e-android     # bridge E2E on a connected device (DEVICE=<id>)
+
+# Underlying commands
 (cd core && go build ./... && go vet ./... && go test ./...)
 (cd engine && go build ./... && go vet ./...)
 
-# Flutter app
 (cd app && flutter analyze && flutter test)
-(cd app && flutter build linux)   # desktop
-(cd app && flutter build apk)     # android
+(cd app && flutter build linux --release)   # desktop
+(cd app && flutter build apk --release)     # android
 ```

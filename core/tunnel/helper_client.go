@@ -29,8 +29,8 @@ type HelperSpawnFunc func(socketPath string) (*exec.Cmd, error)
 func (f HelperSpawnFunc) Spawn(socketPath string) (*exec.Cmd, error) { return f(socketPath) }
 
 const (
-	helperSpawnTimeout     = 15 * time.Second
-	helperConnectTimeout   = 30 * time.Second
+	helperSpawnTimeout      = 15 * time.Second
+	helperConnectTimeout    = 30 * time.Second
 	helperDisconnectTimeout = 5 * time.Second
 )
 
@@ -211,11 +211,11 @@ type helperClient struct {
 	enc    *json.Encoder
 	logger *log.Logger
 
-	mu      sync.Mutex
+	mu         sync.Mutex
 	seqCounter uint64
-	pending map[uint64]chan ServerMessage
-	closed  bool
-	running bool
+	pending    map[uint64]chan ServerMessage
+	closed     bool
+	running    bool
 }
 
 func dialHelper(socketPath string, logger *log.Logger) (*helperClient, error) {

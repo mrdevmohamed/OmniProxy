@@ -13,8 +13,8 @@ import "omniproxy/engine"
 // engine.Options so the helper never re-derives engine configuration itself
 // (the shared engine module is the single builder).
 type ClientMessage struct {
-	Type    string        `json:"type"` // connect | disconnect | ping | quit
-	Seq     uint64        `json:"seq,omitempty"`
+	Type    string         `json:"type"` // connect | disconnect | ping | quit
+	Seq     uint64         `json:"seq,omitempty"`
 	Options engine.Options `json:"options,omitempty"`
 }
 

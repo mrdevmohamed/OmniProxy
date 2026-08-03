@@ -32,20 +32,27 @@ Commercial cross-platform VPN client for **Android, Windows, Linux**.
 ## Build / test / lint
 
 ```bash
-# Go core + engine
+# Everything (quality gates, tests, then release builds for all platforms)
+make check       # go build/vet/gofmt + flutter analyze
+make test        # go test (core + engine) + flutter test (incl. host Linux E2E)
+make build       # Android APK + Linux bundle + Windows core DLL (app bundle
+                 #   needs a Windows host: make flutter-windows)
+make build-native# Android + Linux only (what a Linux host fully builds)
+make e2e-android # bridge E2E on a connected Android device (DEVICE=<id>)
+make help
+
+# Or the underlying commands directly
 cd core && go build ./... && go vet ./... && go test ./... && gofmt -l .
 cd engine && go build ./... && go vet ./...
-
-# Flutter app
 cd app && flutter analyze && flutter test
 cd app && flutter run -d linux          # desktop dev
-cd app && flutter build linux           # release bundle
-cd app && flutter build apk --debug     # android debug apk
+cd app && flutter build linux --release
+cd app && flutter build apk --release
 
-# Platform artifacts (populated in later milestones)
+# Platform artifacts (also driven by the Makefile)
 tools/build_linux.sh    # libomniproxy.so (c-shared) + pkexec helper
-tools/build_android.sh  # gomobile bind → .aar
-tools/build_windows.sh  # omniproxy.dll + wintun.dll bundling
+make aar                # gomobile bind → .aar (copied into app/android/app/libs)
+make windows-core       # omniproxy.dll (mingw cross-compile) + wintun.dll
 ```
 
 ## Commit conventions
