@@ -3,6 +3,8 @@ core/bin/
 core/dist/
 engine/bin/
 engine/dist/
+core/out/
+core/tunnel/cache.db
 *.o
 *.a
 *.so

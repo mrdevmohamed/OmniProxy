@@ -3,15 +3,14 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_client.dart';
+import '../core/client_factory.dart';
 import '../core/models.dart';
-import '../core/mock_api_client.dart';
 
-/// Backs the whole app. M5 wires the mocked contract; M6+ replaces the value
-/// with a transport-backed client (selected per platform).
+/// Backs the whole app. M5 wired the mocked contract; M6+ uses the real
+/// transport-backed client (selected per platform in `client_factory.dart`).
+/// Widget tests override this with a mock.
 final apiClientProvider = Provider<ApiClient>((ref) {
-  final mock = MockApiClient();
-  ref.onDispose(mock.dispose);
-  return mock;
+  return buildApiClient();
 });
 
 final versionProvider = FutureProvider<AppVersion>((ref) {

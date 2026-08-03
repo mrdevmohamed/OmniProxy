@@ -36,6 +36,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_riverpod: ^3.4.2
 
+  # dart:ffi helpers (malloc/Utf8) for the Linux/Windows bridge transports.
+  ffi: ^2.1.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

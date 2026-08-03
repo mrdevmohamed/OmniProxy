@@ -119,6 +119,18 @@ func New(cfg Config) (*Facade, error) {
 // Dispatch routes a bridge request by method name; it is the embedded
 // api.Dispatcher promoted onto the facade.
 
+// Close tears the facade down: it disconnects any active session, stops the
+// tunnel, and releases runner resources (e.g. the privileged helper process on
+// Linux). Called by transports on shutdown; idempotent.
+func (f *Facade) Close() error {
+	_ = f.vpn.Disconnect()
+	_ = f.tunnel.Stop()
+	if c, ok := f.cfg.Runner.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 // SetEventSink registers the bridge event callback. Called by transports at
 // init; may be re-registered at any time.
 func (f *Facade) SetEventSink(sink api.EventSink) {

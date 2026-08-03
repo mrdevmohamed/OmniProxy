@@ -146,20 +146,22 @@ Delivered asynchronously to subscribers, one JSON object per event.
 C ABI (exported from the c-shared build of core):
 
 ```c
-int omniproxy_init(const char* config_json);        // {dataDir, logLevel} → 0 ok
+int omniproxy_init(const char* config_json);   // {dataDir, logLevel, helperPath} → 0 ok
 void omniproxy_shutdown(void);
 const char* omniproxy_request(const char* method,   // returns response JSON; free with
                               const char* request_json);  // omniproxy_free_string
-int omniproxy_subscribe(void (*cb)(const char* event_json));
+const char* omniproxy_poll_events(void);    // returns events JSON array (may be empty);
+                                            // free with omniproxy_free_string
 void omniproxy_free_string(const char*);
 ```
 
 - `dart:ffi` binds these; request/response framing is identical to §5.1.
+- Events are **polled, not pushed**: the core buffers events in a bounded ring and `omniproxy_poll_events` drains it. The Dart transport drains on a short timer and re-emits onto its event stream. A native callback into the Dart isolate would deadlock when a synchronous request (e.g. `connect`) publishes an event while the isolate is blocked inside the FFI call.
 - Linux: VPN mode drives the privileged pkexec helper (see `docs/platform-notes.md`) which **hosts the engine**; the core is a JSON-over-socket client. Proxy mode needs no helper and runs in-process.
 - `omniproxy_init` is called once at app startup, `omniproxy_shutdown` on exit.
 
 ## 6. Security notes for transports
 
 - Never log request/response payloads containing credential fields.
-- The event callback and channel handlers run on short-lived callbacks; heavy work stays on core goroutines.
+- The Android event channel handler and the Dart poll timer only hand events off the core; heavy work stays on core goroutines.
 - `config_json`/data dirs are validated by core; paths are platform config dirs, never user-supplied relative paths.

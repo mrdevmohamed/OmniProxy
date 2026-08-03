@@ -112,6 +112,21 @@ install(DIRECTORY "${NATIVE_ASSETS_DIR}"
    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
    COMPONENT Runtime)
 
+# === OmniProxy Go bridge (M6) ===
+# libomniproxy.so (dart:ffi transport) lands in lib/ (on $ORIGIN/lib rpath);
+# the privileged omniproxy-helper sits next to the executable so the bridge can
+# locate it via Platform.resolvedExecutable. Built by tools/build_linux.sh into
+# core/out; guards keep a plain `flutter build linux` working when absent.
+set(OMNIPROXY_CORE_OUT "${CMAKE_CURRENT_LIST_DIR}/../../core/out")
+if(EXISTS "${OMNIPROXY_CORE_OUT}/libomniproxy.so")
+  install(FILES "${OMNIPROXY_CORE_OUT}/libomniproxy.so"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+if(EXISTS "${OMNIPROXY_CORE_OUT}/omniproxy-helper")
+  install(PROGRAMS "${OMNIPROXY_CORE_OUT}/omniproxy-helper"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+endif()
+
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.
 set(FLUTTER_ASSET_DIR_NAME "flutter_assets")
