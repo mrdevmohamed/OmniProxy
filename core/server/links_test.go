@@ -142,6 +142,61 @@ func TestParseVLessNoTLS(t *testing.T) {
 	}
 }
 
+func TestParseVLessEncryptionAuto(t *testing.T) {
+	link := "vless://ae6ee62c-8ec6-11f1-9ed8-674a19ddf00b@www.nagwa.com:80" +
+		"?global_padding=true&authenticated_length=false&encryption=auto&security=none" +
+		"&fp=&type=ws&path=/vpnjantit&host=www.nagwa.com.ru2.mrmohamed.dpdns.org#ru2"
+	p, err := ParseLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Protocol != models.ProtocolVLESS || p.Port != 80 {
+		t.Fatalf("protocol/port = %s:%d", p.Protocol, p.Port)
+	}
+	if p.TLS.Enabled {
+		t.Fatalf("tls should be disabled: %+v", p.TLS)
+	}
+	if p.Transport == nil || p.Transport.Type != models.TransportWS ||
+		p.Transport.Path != "/vpnjantit" || p.Transport.Host != "www.nagwa.com.ru2.mrmohamed.dpdns.org" {
+		t.Fatalf("transport = %+v", p.Transport)
+	}
+	if p.Name != "ru2" {
+		t.Fatalf("name = %q", p.Name)
+	}
+}
+
+func TestParseVmessSIP002(t *testing.T) {
+	link := "vmess://ae6ee62c-8ec6-11f1-9ed8-674a19ddf00b@www.nagwa.com:80" +
+		"?global_padding=true&authenticated_length=false&encryption=auto&security=none" +
+		"&fp=&type=ws&path=/vpnjantit&host=www.nagwa.com.ru2.mrmohamed.dpdns.org#ru2"
+	p, err := ParseLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Protocol != models.ProtocolVMess {
+		t.Fatalf("scheme vmess:// with uuid@host is a vmess link; got protocol %q", p.Protocol)
+	}
+	if p.UUID != "ae6ee62c-8ec6-11f1-9ed8-674a19ddf00b" || p.Port != 80 {
+		t.Fatalf("uuid/port = %q:%d", p.UUID, p.Port)
+	}
+	if p.Security != "auto" {
+		t.Fatalf("vmess security = %q, want auto", p.Security)
+	}
+	if p.TLS.Enabled {
+		t.Fatalf("tls should be disabled: %+v", p.TLS)
+	}
+	if !p.GlobalPadding || p.AuthenticatedLength {
+		t.Fatalf("globalPadding=%v authenticatedLength=%v", p.GlobalPadding, p.AuthenticatedLength)
+	}
+	if p.Transport == nil || p.Transport.Host != "www.nagwa.com.ru2.mrmohamed.dpdns.org" ||
+		p.Transport.Path != "/vpnjantit" {
+		t.Fatalf("transport = %+v", p.Transport)
+	}
+	if p.Name != "ru2" {
+		t.Fatalf("name = %q", p.Name)
+	}
+}
+
 func TestParseShadowsocksSIP002(t *testing.T) {
 	p, err := ParseLink("ss://" + b64("aes-128-gcm:secret") + "@cp.example.com:8388#Frankfurt")
 	if err != nil {

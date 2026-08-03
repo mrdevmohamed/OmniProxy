@@ -81,9 +81,11 @@ type Outbound struct {
 	Flow     string // vless flow, e.g. xtls-rprx-vision
 	Security string // vmess security: auto | none | aes-128-gcm | chacha20-poly1305
 
-	// GlobalPadding and PacketEncoding apply to UDP-over-WS (vmess/vless).
-	GlobalPadding  bool
-	PacketEncoding string // "xudp", "packet" or ""
+	// GlobalPadding, AuthenticatedLength and PacketEncoding are VMess
+	// wire/transport options.
+	GlobalPadding       bool
+	AuthenticatedLength bool
+	PacketEncoding      string // "xudp", "packet" or ""
 
 	TLS       *TLSSettings
 	SSH       *SSHSettings
@@ -276,6 +278,7 @@ func buildOutbound(ob Outbound) option.Outbound {
 				UUID:                        ob.UUID,
 				Security:                    security,
 				GlobalPadding:               ob.GlobalPadding,
+				AuthenticatedLength:         ob.AuthenticatedLength,
 				PacketEncoding:              ob.PacketEncoding,
 				OutboundTLSOptionsContainer: tlsContainer(ob.TLS),
 				Transport:                   buildTransport(ob.Transport),

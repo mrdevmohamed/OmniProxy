@@ -41,6 +41,9 @@ func buildOutbound(p *models.ServerProfile) engine.Outbound {
 		PacketEncoding: p.PacketEncoding,
 		Transport:      transportIfEnabled(p.Transport),
 	}
+	if p.AuthenticatedLength {
+		ob.AuthenticatedLength = true
+	}
 	switch p.Protocol {
 	case models.ProtocolVLESS:
 		ob.Protocol = engine.ProtocolVLESS

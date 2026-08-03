@@ -94,13 +94,16 @@ func schemeOf(link string) string {
 	return "unknown"
 }
 
-// parseVMess handles the v2rayN format: vmess://base64url(JSON).
+// parseVMess handles both v2rayN vmess link forms:
+//   - vmess://base64url(JSON) (classic)
+//   - vmess://uuid@host:port?params#name (SIP002)
+//
+// The SIP002 form is VMess, not VLESS: its query carries VMess-only options
+// (encryption → wire security, global_padding, authenticated_length).
 func parseVMess(link string) (*models.ServerProfile, error) {
 	payload := strings.TrimPrefix(link, "vmess://")
-	// Some clients emit vmess://<b64uuid>@host:port?... (SIP002-ish). Detect an
-	// '@' before any decoding succeeds and treat it like vless without the flow.
 	if strings.Contains(payload, "@") {
-		return parseVLess(strings.Replace(link, "vmess://", "vless://", 1))
+		return parseVMessSIP002(link)
 	}
 	raw, err := decodeBase64(strings.TrimSpace(payload))
 	if err != nil {
@@ -154,6 +157,56 @@ func parseVMess(link string) (*models.ServerProfile, error) {
 	})
 }
 
+// parseVMessSIP002 handles v2rayN's vmess://uuid@host:port?params#name. The
+// query semantics differ from VLESS: encryption is the VMess wire security
+// (auto/aes-128-gcm/...), security selects TLS mode (none/tls), and
+// global_padding/authenticated_length are VMess wire options.
+func parseVMessSIP002(link string) (*models.ServerProfile, error) {
+	rest := strings.TrimPrefix(link, "vmess://")
+	name, rest := splitFragment(rest)
+	u, err := url.Parse("omniproxy://" + rest)
+	if err != nil {
+		return nil, fmt.Errorf("vmess: %w", err)
+	}
+	if strings.TrimSpace(u.Host) == "" || strings.TrimSpace(u.User.Username()) == "" {
+		return nil, errors.New("vmess: missing host or uuid")
+	}
+	q := u.Query()
+	if sec := q.Get("security"); sec == "reality" {
+		return nil, errors.New("vmess: reality is not supported yet")
+	}
+	transport, err := transportFromNetwork(q.Get("type"), q.Get("host"), q.Get("path"))
+	if err != nil {
+		return nil, err
+	}
+	tls, err := tlsFromFields(q.Get("security") == "tls", q.Get("sni"), q.Get("host"), q.Get("fp"), q.Get("alpn"), allowInsecure(q.Get("allowInsecure")))
+	if err != nil {
+		return nil, err
+	}
+	security := strings.TrimSpace(q.Get("encryption"))
+	if security == "" {
+		security = "auto"
+	}
+	return newProfile(models.ProtocolVMess, name, u.Hostname(), portOr(u.Port(), "443"), &models.ServerProfile{
+		UUID:                u.User.Username(),
+		Security:            security,
+		Transport:           transport,
+		TLS:                 *tls,
+		GlobalPadding:       boolQuery(q, "global_padding"),
+		AuthenticatedLength: boolQuery(q, "authenticated_length"),
+		PacketEncoding:      q.Get("packetEncoding"),
+	})
+}
+
+// boolQuery reads a "true"/"1"/"yes" query flag.
+func boolQuery(q url.Values, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(q.Get(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // parseVLess handles vless://uuid@host:port?params#name.
 func parseVLess(link string) (*models.ServerProfile, error) {
 	rest := strings.TrimPrefix(link, "vless://")
@@ -166,7 +219,9 @@ func parseVLess(link string) (*models.ServerProfile, error) {
 		return nil, errors.New("vless: missing host or uuid")
 	}
 	q := u.Query()
-	if enc := q.Get("encryption"); enc != "" && enc != "none" {
+	// VLESS encryption is always "none"; providers (v2rayN) sometimes emit
+	// "auto", which other clients treat as none too. Accept both.
+	if enc := q.Get("encryption"); enc != "" && enc != "none" && enc != "auto" {
 		return nil, fmt.Errorf("vless: unsupported encryption %q (only none)", enc)
 	}
 	if sec := q.Get("security"); sec == "reality" {

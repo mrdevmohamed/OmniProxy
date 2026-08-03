@@ -33,6 +33,7 @@
   "flow": "string|null",        // vless flow (e.g. "xtls-rprx-vision")
   "security": "string|null",    // vmess security (e.g. "auto" | "none")
   "globalPadding": false,       // vmess/vless anti-detection padding
+  "authenticatedLength": false, // vmess length-authentication wire option
   "packetEncoding": "string|null", // vless/vmess UDP encoding (e.g. "xudp")
   "tls": {
     "enabled": false,
@@ -63,7 +64,7 @@
 
 `importServers`/`exportServers` use a single-server envelope `{"format":"onnproxy","version":1,"server":{...ServerProfile...}}` (multi-server = JSON array of envelopes) — the shared, cross-platform interchange format.
 
-`importServers` also accepts share links directly (a single link or multi-line text, one per line): `vmess://` (base64 JSON), `vless://`, `trojan://`, `ss://` (SIP002 and legacy), `socks5://`/`socks://`, and `http://`. Unsupported transports/schemes (grpc, httpupgrade, quic, reality) are rejected per line and reported in `errors`; nothing partially imports. When importing links, each line maps to a `ServerProfile`; credentials are stored via SecretStore as usual.
+`importServers` also accepts share links directly (a single link or multi-line text, one per line): `vmess://` (base64 JSON **and** the SIP002 `uuid@host:port?params#name` form — VMess, with `encryption`→wire security, `global_padding`/`authenticated_length`), `vless://`, `trojan://`, `ss://` (SIP002 and legacy), `socks5://`/`socks://`, and `http://`. Unsupported transports/schemes (grpc, httpupgrade, quic, reality) are rejected per line and reported in `errors`; nothing partially imports. When importing links, each line maps to a `ServerProfile`; credentials are stored via SecretStore as usual.
 
 ### 2.2 VPNSession
 

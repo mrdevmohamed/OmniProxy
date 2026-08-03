@@ -79,27 +79,29 @@ type SSHConfig struct {
 // layer stores them in OS-native secure storage, never plaintext on disk, and
 // the logger redacts them.
 type ServerProfile struct {
-	ID             string           `json:"id"`
-	Name           string           `json:"name"`
-	Protocol       Protocol         `json:"protocol"`
-	Address        string           `json:"address"`
-	Port           int              `json:"port"`
-	Username       string           `json:"username,omitempty"`
-	Password       string           `json:"password,omitempty"`
-	Cipher         string           `json:"cipher,omitempty"`
-	UUID           string           `json:"uuid,omitempty"`
-	Flow           string           `json:"flow,omitempty"`
-	Security       string           `json:"security,omitempty"`
-	TLS            TLSConfig        `json:"tls"`
-	SSH            SSHConfig        `json:"ssh"`
-	Transport      *TransportConfig `json:"transport,omitempty"`
-	GlobalPadding  bool             `json:"globalPadding,omitempty"`
-	PacketEncoding string           `json:"packetEncoding,omitempty"`
-	Favorite       bool             `json:"favorite"`
-	LastLatencyMS  int              `json:"lastLatencyMs"`
-	LastTestedAt   *time.Time       `json:"lastTestedAt,omitempty"`
-	CreatedAt      time.Time        `json:"createdAt"`
-	UpdatedAt      time.Time        `json:"updatedAt"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Protocol      Protocol         `json:"protocol"`
+	Address       string           `json:"address"`
+	Port          int              `json:"port"`
+	Username      string           `json:"username,omitempty"`
+	Password      string           `json:"password,omitempty"`
+	Cipher        string           `json:"cipher,omitempty"`
+	UUID          string           `json:"uuid,omitempty"`
+	Flow          string           `json:"flow,omitempty"`
+	Security      string           `json:"security,omitempty"`
+	TLS           TLSConfig        `json:"tls"`
+	SSH           SSHConfig        `json:"ssh"`
+	Transport     *TransportConfig `json:"transport,omitempty"`
+	GlobalPadding bool             `json:"globalPadding,omitempty"`
+	// AuthenticatedLength is the VMess length-authentication wire option.
+	AuthenticatedLength bool       `json:"authenticatedLength,omitempty"`
+	PacketEncoding      string     `json:"packetEncoding,omitempty"`
+	Favorite            bool       `json:"favorite"`
+	LastLatencyMS       int        `json:"lastLatencyMs"`
+	LastTestedAt        *time.Time `json:"lastTestedAt,omitempty"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
 }
 
 // Clone returns a deep copy of the profile.

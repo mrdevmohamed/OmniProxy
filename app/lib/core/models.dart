@@ -229,6 +229,7 @@ class ServerProfile {
     this.ssh = const SshSettings(),
     this.transport,
     this.globalPadding = false,
+    this.authenticatedLength = false,
     this.packetEncoding,
     this.favorite = false,
     this.lastLatencyMs = 0,
@@ -252,6 +253,7 @@ class ServerProfile {
   final SshSettings ssh;
   final TransportSettings? transport;
   final bool globalPadding;
+  final bool authenticatedLength;
   final String? packetEncoding;
   final bool favorite;
   final int lastLatencyMs;
@@ -275,6 +277,7 @@ class ServerProfile {
     SshSettings? ssh,
     TransportSettings? transport,
     bool? globalPadding,
+    bool? authenticatedLength,
     String? packetEncoding,
     bool? favorite,
     int? lastLatencyMs,
@@ -298,6 +301,7 @@ class ServerProfile {
         ssh: ssh ?? this.ssh,
         transport: transport ?? this.transport,
         globalPadding: globalPadding ?? this.globalPadding,
+        authenticatedLength: authenticatedLength ?? this.authenticatedLength,
         packetEncoding: packetEncoding ?? this.packetEncoding,
         favorite: favorite ?? this.favorite,
         lastLatencyMs: lastLatencyMs ?? this.lastLatencyMs,
@@ -329,6 +333,7 @@ class ServerProfile {
             : TransportSettings.fromJson(
                 json['transport'] as Map<String, dynamic>),
         globalPadding: json['globalPadding'] == true,
+        authenticatedLength: json['authenticatedLength'] == true,
         packetEncoding: json['packetEncoding'] as String?,
         favorite: json['favorite'] == true,
         lastLatencyMs: json['lastLatencyMs'] as int? ?? 0,
@@ -355,6 +360,7 @@ class ServerProfile {
         'ssh': ssh.toJson(),
         if (transport != null) 'transport': transport!.toJson(),
         if (globalPadding) 'globalPadding': globalPadding,
+        if (authenticatedLength) 'authenticatedLength': authenticatedLength,
         if (packetEncoding != null) 'packetEncoding': packetEncoding,
         'favorite': favorite,
         'lastLatencyMs': lastLatencyMs,
