@@ -1,7 +1,7 @@
 # OmniProxy — Phase 1 (MVP) Implementation Plan
 
 **Source of truth:** `PRD.md` · **Companion specs:** `docs/api-contract.md`, `docs/platform-notes.md`
-**Status:** Phase 1 in progress (Milestone 1 of 9)
+**Status:** Phase 1 in progress (Milestone 3 of 9)
 
 ## 1. Goals & scope
 
@@ -23,14 +23,14 @@ Phase 1 MVP per PRD §11: app shell on Android/Windows/Linux, server CRUD + impo
 | Decision | Choice |
 |---|---|
 | Platform order | Linux E2E → Android E2E → Windows (code-complete, untested on this host) |
-| Linux TUN privileges | Privileged helper (root via `pkexec`) creates TUN fd with sing-tun; passed to unprivileged core over Unix socket (SCM_RIGHTS) |
+| Linux TUN privileges | Privileged helper (root via `pkexec`) **hosts the engine** for VPN mode (embedded sing-box module); core drives it over a Unix socket (JSON). Not fd-passing — TUN setup + auto-route need CAP_NET_ADMIN in the engine process (see platform-notes) |
 | Git | `git init`; one commit per milestone |
 | Dashboard MVP | Status/server/duration only |
 | Import/export | `.onnproxy` file + pasted link; QR deferred |
 | Engine pin | `github.com/sagernet/sing-box v1.13.15` (stable) |
 | Android modes | VPN (VpnService) default + optional local-proxy mode |
 | State management | Riverpod |
-| Latency test | sing-box outbound `Delay()`, not a custom ping |
+| Latency test | TCP-dial via injectable tester in core (sing-box url-test/group delay is a Phase 2 enhancement — `adapter.Outbound` has no `Delay()` in v1.13.15) |
 | Bridge flavor | Android: MethodChannel over gomobile bind; Linux/Windows: `dart:ffi` into c-shared lib |
 | Android emulator | `run_emu` (alias for `emulator -avd light_emulator`) |
 
@@ -52,10 +52,11 @@ OmniProxy/
 │   └── api/                     # shared API contract (types + method names)
 ├── engine/                      # sing-box wrapper module (pinned v1.13.15)
 │   ├── go.mod
-│   ├── engine.go                # singbox.New / Start / Close
-│   ├── config.go                # model → option.Options (TUN | LocalProxy inbound)
-│   ├── platform.go              # PlatformInterface hook (Android TUN fd; nil on desktop)
-│   └── latency.go               # outbound Delay()
+│   ├── engine.go                # Engine: New / Start / Close, log sink
+│   ├── config.go                # typed config → option.Options (TUN | mixed inbound)
+│   ├── registry.go              # minimal protocol registrations (keeps module lean)
+│   ├── platform.go              # PlatformInterface noop + injectable hook (Android VpnService fd)
+│   └── log.go                   # Level + LogSink → sing-box PlatformWriter
 ├── app/                         # Flutter UI
 │   ├── lib/
 │   │   ├── main.dart
@@ -84,7 +85,7 @@ Bridges are **pure transport only** — no platform business logic (PRD §7.2).
 
 1. **Scaffold** — git init, `go.work`, module skeletons, `docs/api-contract.md`, README build/lint/test commands.
 2. **Core: models + Config Engine + Server Manager + logging** — 4 Phase-1 models, encrypt-at-rest persistence, CRUD/import/export/favorites, redacting logger. Unit tests alongside.
-3. **Engine module** — pin v1.13.15, config builders (VLESS/VMess/SOCKS/SSH outbound; TUN + LocalProxy inbounds), Start/Close, fd hook, latency.
+3. **Engine module** — pinned v1.13.15; config builders (VLESS/VMess/SOCKS5/HTTP/SSH/Shadowsocks outbound; TUN + mixed-loopback inbounds), `Start`/`Close`, log-sink adapter, minimal protocol registry, optional platform hook; e2e routing test through a local SOCKS5 test server. *(Latency via core TCP-dial; URL-test deferred.)*
 4. **Core: Tunnel Manager + VPN Service + facade** — state machine (Disconnected/Connecting/Connected/Reconnecting/Error), connect/disconnect, reconnect w/ backoff, `VPNSession` tracking; core test suite green. **Check-in.**
 5. **Flutter shell** — M3 theme, responsive nav, Dashboard + Server Manager + Settings (theme, connection mode) wired to a mocked `ApiClient`. **Check-in.**
 6. **Linux bridge E2E** — c-shared lib + dart:ffi + pkexec helper; real connect/disconnect against a local test server. **Check-in.**

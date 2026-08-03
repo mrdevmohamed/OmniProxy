@@ -20,10 +20,11 @@ Per-platform details for the Flutter ↔ Go bridge, TUN/privileges, and native g
 
 ## Linux
 
-- **TUN privileges (design):** creating a TUN interface requires root/CAP_NET_ADMIN. The core itself runs unprivileged. A small privileged helper (also Go, same workspace) is launched via `pkexec` on demand; it creates the TUN fd with `sing-tun` and passes the fd to the core over a Unix socket using `SCM_RIGHTS` (fd passing). sing-box consumes the existing fd — it does not create the interface itself.
-  - Helper scope is minimal: authenticate (pkexec), create fd, pass fd, exit. No tunnel logic in the helper.
-  - The core retries/waits for the fd with a timeout and reports `unauthorized` (PRD §3.3) with actionable UI text if pkexec is cancelled.
-- **Proxy mode:** no privileges needed; sing-box local inbound on loopback.
+- **TUN privileges (design):** creating a TUN interface **and configuring routing/DNS** (auto-route via netlink, ip rules, systemd-resolved) requires root/CAP_NET_ADMIN in the process that hosts the engine. The core itself runs unprivileged, so a small privileged helper (also Go, same workspace, embeds the same `engine` module) is launched via `pkexec` on demand and **hosts the sing-box tunnel process** for VPN mode. The helper listens on a Unix socket (`$XDG_RUNTIME_DIR/omniproxy/helper.sock`); the core is a JSON-over-socket client that sends `connect`/`disconnect`/`state` and streams events back. This is the same "embedded sing-box, never shelled out" rule — the helper links sing-box as a Go module; it is not the sing-box CLI.
+  - An early design considered the helper only *creating* the TUN fd and passing it to the unprivileged core via `SCM_RIGHTS`; this was rejected because sing-box's tun setup (addresses, `auto_route`, DNS) also needs `CAP_NET_ADMIN` in the engine process. Verified against sing-box v1.13.15.
+  - Helper scope: authenticate (pkexec), own the engine lifecycle, configure TUN/routing. No tunnel *protocol* logic lives in the helper beyond what the shared `engine` module provides.
+  - The core retries/waits for the helper with a timeout and reports `unauthorized` (PRD §3.3) with actionable UI text if pkexec is cancelled.
+- **Proxy mode:** no privileges needed; the core runs the `engine` module in-process with the local mixed inbound on loopback.
 - **Go core packaging:** `go build -buildmode=c-shared` → `libomniproxy.so`, loaded via `dart:ffi`. The helper is a separate binary under `tools/`.
 - **Credentials:** Secret Service / libsecret (`go-keyring`).
 - **Config dir:** `$XDG_CONFIG_HOME/omniproxy` (fallback `~/.config/omniproxy`); data/logs under `$XDG_DATA_HOME`/`$XDG_STATE_HOME`.
@@ -42,7 +43,7 @@ Per-platform details for the Flutter ↔ Go bridge, TUN/privileges, and native g
 
 | Action | Android | Linux | Windows |
 |---|---|---|---|
-| TUN interface | VpnService grant | pkexec helper (fd pass) | Wintun (in-process) |
+| TUN interface | VpnService grant | pkexec helper (hosts engine) | Wintun (in-process) |
 | Connect (VPN mode) | requires VpnService consent | requires helper success | requires wintun.dll present |
 | Connect (proxy mode) | none | none | none |
 | Secure storage | Keystore | libsecret | Credential Manager/DPAPI |
