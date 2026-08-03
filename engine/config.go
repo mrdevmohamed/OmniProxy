@@ -114,6 +114,14 @@ const (
 	defaultTunName     = "omniproxy"
 	defaultMTU         = uint32(1500)
 	defaultStack       = "mixed"
+
+	// VPN-mode DNS defaults. Client queries resolve through the proxy (no DNS
+	// leak); queries triggered by outbound dialing (the proxy server's own
+	// domain) resolve over the real network to avoid a chicken-and-egg loop.
+	dnsServerProxyTag = "dns-proxy"
+	dnsServerLocalTag = "dns-local"
+	dnsRemoteAddress  = "8.8.8.8"
+	dnsLocalAddress   = "223.5.5.5"
 )
 
 // Options configures a single engine run.
@@ -149,6 +157,15 @@ func buildOptions(opts Options) (option.Options, error) {
 		Route: &option.RouteOptions{
 			Final: "proxy",
 		},
+	}
+	if opts.Mode == ModeVPN {
+		// TUN traffic is opaque to sing-box without a DNS module; without one,
+		// client DNS queries fall through to the proxy outbound as raw UDP and
+		// are answered by whatever resolver the server forwards them to. Add a
+		// DNS module and hijack DNS at the router so queries are answered
+		// locally (through the proxy) and resolved domains are cached.
+		o.DNS = buildDNSOptions()
+		o.Route.Rules = append([]option.Rule{dnsHijackRule()}, o.Route.Rules...)
 	}
 	if opts.CacheFilePath != "" {
 		o.Experimental = &option.ExperimentalOptions{
@@ -366,6 +383,81 @@ func tlsContainer(tlsCfg *TLSSettings) option.OutboundTLSOptionsContainer {
 		tlsOpts.UTLS = &option.OutboundUTLSOptions{Fingerprint: tlsCfg.Fingerprint}
 	}
 	return option.OutboundTLSOptionsContainer{TLS: tlsOpts}
+}
+
+// buildDNSOptions returns the VPN-mode DNS configuration. Client queries use
+// the default (dns-proxy) server so lookups travel through the tunnel; queries
+// issued while dialing an outbound (e.g. resolving the proxy server's domain)
+// use dns-local over direct to avoid a resolution loop. reverse_mapping lets
+// the router answer PTR lookups for tunneled addresses.
+func buildDNSOptions() *option.DNSOptions {
+	return &option.DNSOptions{
+		RawDNSOptions: option.RawDNSOptions{
+			Servers: []option.DNSServerOptions{
+				{
+					Type: C.DNSTypeUDP,
+					Tag:  dnsServerProxyTag,
+					Options: &option.RemoteDNSServerOptions{
+						RawLocalDNSServerOptions: option.RawLocalDNSServerOptions{
+							DialerOptions: option.DialerOptions{Detour: "proxy"},
+						},
+						DNSServerAddressOptions: option.DNSServerAddressOptions{
+							Server: dnsRemoteAddress,
+						},
+					},
+				},
+				{
+					Type: C.DNSTypeUDP,
+					Tag:  dnsServerLocalTag,
+					Options: &option.RemoteDNSServerOptions{
+						RawLocalDNSServerOptions: option.RawLocalDNSServerOptions{
+							DialerOptions: option.DialerOptions{Detour: "direct"},
+						},
+						DNSServerAddressOptions: option.DNSServerAddressOptions{
+							Server: dnsLocalAddress,
+						},
+					},
+				},
+			},
+			Rules: []option.DNSRule{
+				{
+					Type: C.RuleTypeDefault,
+					DefaultOptions: option.DefaultDNSRule{
+						RawDefaultDNSRule: option.RawDefaultDNSRule{
+							Outbound: badoption.Listable[string]{"any"},
+						},
+						DNSRuleAction: option.DNSRuleAction{
+							Action: C.RuleActionTypeRoute,
+							RouteOptions: option.DNSRouteActionOptions{
+								Server: dnsServerLocalTag,
+							},
+						},
+					},
+				},
+			},
+			Final:          dnsServerProxyTag,
+			ReverseMapping: true,
+			DNSClientOptions: option.DNSClientOptions{
+				IndependentCache: true,
+			},
+		},
+	}
+}
+
+// dnsHijackRule diverts DNS traffic arriving at the TUN inbound to the DNS
+// module instead of forwarding it as ordinary UDP through the proxy.
+func dnsHijackRule() option.Rule {
+	return option.Rule{
+		Type: C.RuleTypeDefault,
+		DefaultOptions: option.DefaultRule{
+			RawDefaultRule: option.RawDefaultRule{
+				Protocol: badoption.Listable[string]{C.ProtocolDNS},
+			},
+			RuleAction: option.RuleAction{
+				Action: C.RuleActionTypeHijackDNS,
+			},
+		},
+	}
 }
 
 // buildTransport maps outbound transport settings onto sing-box options. Only

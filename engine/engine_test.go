@@ -88,6 +88,70 @@ func TestBuildVPNConfig(t *testing.T) {
 	if len(tunOpts.Address) != 2 {
 		t.Fatalf("want default v4+v6 addresses, got %v", tunOpts.Address)
 	}
+	if built.DNS == nil {
+		t.Fatal("VPN mode should configure a DNS module")
+	}
+	if len(built.DNS.Servers) != 2 {
+		t.Fatalf("want 2 dns servers, got %d", len(built.DNS.Servers))
+	}
+	if built.DNS.Final != "dns-proxy" {
+		t.Fatalf("want final dns server dns-proxy, got %q", built.DNS.Final)
+	}
+	if !built.DNS.ReverseMapping {
+		t.Fatal("dns reverse_mapping should be enabled in VPN mode")
+	}
+	if built.Route == nil || len(built.Route.Rules) == 0 {
+		t.Fatal("VPN mode should route DNS through the router")
+	}
+	if built.Route.Final != "proxy" {
+		t.Fatalf("want route final proxy, got %q", built.Route.Final)
+	}
+}
+
+func TestBuildVPNConfigMarshalsDNS(t *testing.T) {
+	built, err := buildOptions(Options{
+		Mode:     ModeVPN,
+		LogLevel: LevelInfo,
+		Outbound: Outbound{
+			Protocol: ProtocolVLESS,
+			Address:  "203.0.113.10",
+			Port:     443,
+			UUID:     "11111111-2222-3333-4444-555555555555",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testContext()
+	data, err := json.MarshalContext(ctx, built)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := json.UnmarshalExtendedContext[option.Options](ctx, data); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+}
+
+func TestBuildProxyConfigHasNoDNS(t *testing.T) {
+	built, err := buildOptions(Options{
+		Mode:     ModeProxy,
+		LogLevel: LevelInfo,
+		Outbound: Outbound{
+			Protocol: ProtocolSOCKS,
+			Address:  "203.0.113.10",
+			Port:     1080,
+		},
+		Proxy: ProxyOptions{Listen: "127.0.0.1", Port: 9080},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.DNS != nil {
+		t.Fatalf("proxy mode should not configure a DNS module, got %+v", built.DNS)
+	}
+	if built.Route != nil && len(built.Route.Rules) != 0 {
+		t.Fatalf("proxy mode should not add dns hijack rules, got %v", built.Route.Rules)
+	}
 }
 
 func TestBuildTLS(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	boxService "github.com/sagernet/sing-box/adapter/service"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/dns"
+	dnsTransport "github.com/sagernet/sing-box/dns/transport"
 	"github.com/sagernet/sing-box/dns/transport/local"
 	_ "github.com/sagernet/sing-box/experimental/clashapi" // registers the clash server (log observable); no listener without ExternalController
 	"github.com/sagernet/sing-box/option"
@@ -45,6 +46,7 @@ func newContext(ctx context.Context) context.Context {
 	outbound.Register[option.SSHOutboundOptions](outboundRegistry, C.TypeSSH, ssh.NewOutbound)
 
 	local.RegisterTransport(dnsTransportRegistry)
+	dnsTransport.RegisterUDP(dnsTransportRegistry)
 
 	return box.Context(ctx, inboundRegistry, outboundRegistry, endpointRegistry, dnsTransportRegistry, serviceRegistry)
 }
