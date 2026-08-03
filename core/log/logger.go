@@ -114,6 +114,14 @@ func (l *Logger) Level() models.LogLevel {
 // secrets as they are created/loaded.
 func (l *Logger) Redactor() *Redactor { return l.redactor }
 
+// AddSink registers an additional sink (e.g. the event bus bridge). Entries
+// already redacted.
+func (l *Logger) AddSink(s Sink) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sinks = append(l.sinks, s)
+}
+
 // LogsAfter returns up to limit redacted entries with Seq > afterSeq.
 func (l *Logger) LogsAfter(afterSeq uint64, limit int) []models.LogEntry {
 	return l.ring.Since(afterSeq, limit)

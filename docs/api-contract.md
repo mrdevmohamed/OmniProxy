@@ -155,7 +155,7 @@ void omniproxy_free_string(const char*);
 ```
 
 - `dart:ffi` binds these; request/response framing is identical to §5.1.
-- Linux: TUN fd comes from the privileged helper (see `docs/platform-notes.md`) and is injected before `connect`; proxy mode needs no fd.
+- Linux: VPN mode drives the privileged pkexec helper (see `docs/platform-notes.md`) which **hosts the engine**; the core is a JSON-over-socket client. Proxy mode needs no helper and runs in-process.
 - `omniproxy_init` is called once at app startup, `omniproxy_shutdown` on exit.
 
 ## 6. Security notes for transports

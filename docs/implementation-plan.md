@@ -1,7 +1,7 @@
 # OmniProxy — Phase 1 (MVP) Implementation Plan
 
 **Source of truth:** `PRD.md` · **Companion specs:** `docs/api-contract.md`, `docs/platform-notes.md`
-**Status:** Phase 1 in progress (Milestone 3 of 9)
+**Status:** Phase 1 in progress (Milestone 4 of 9)
 
 ## 1. Goals & scope
 
@@ -86,7 +86,7 @@ Bridges are **pure transport only** — no platform business logic (PRD §7.2).
 1. **Scaffold** — git init, `go.work`, module skeletons, `docs/api-contract.md`, README build/lint/test commands.
 2. **Core: models + Config Engine + Server Manager + logging** — 4 Phase-1 models, encrypt-at-rest persistence, CRUD/import/export/favorites, redacting logger. Unit tests alongside.
 3. **Engine module** — pinned v1.13.15; config builders (VLESS/VMess/SOCKS5/HTTP/SSH/Shadowsocks outbound; TUN + mixed-loopback inbounds), `Start`/`Close`, log-sink adapter, minimal protocol registry, optional platform hook; e2e routing test through a local SOCKS5 test server. *(Latency via core TCP-dial; URL-test deferred.)*
-4. **Core: Tunnel Manager + VPN Service + facade** — state machine (Disconnected/Connecting/Connected/Reconnecting/Error), connect/disconnect, reconnect w/ backoff, `VPNSession` tracking; core test suite green. **Check-in.**
+4. **Core: Tunnel Manager + VPN Service + facade** — state machine (Disconnected/Connecting/Connected/Reconnecting/Error), connect/disconnect, reconnect w/ backoff, `VPNSession` tracking; core test suite green. *(Auto-reconnect retries failed starts up to the retry policy cap; `reconnect` re-establishes the live session. `deleteServer`/`updateServer` are rejected while connected to that server.)* **Check-in.**
 5. **Flutter shell** — M3 theme, responsive nav, Dashboard + Server Manager + Settings (theme, connection mode) wired to a mocked `ApiClient`. **Check-in.**
 6. **Linux bridge E2E** — c-shared lib + dart:ffi + pkexec helper; real connect/disconnect against a local test server. **Check-in.**
 7. **Android bridge E2E** — gomobile bind → `.aar`, Kotlin MethodChannel host, `VpnProxyService` + `VpnService` (TUN) and proxy mode, persistent notification; verify both modes on `light_emulator`. **Check-in.**
