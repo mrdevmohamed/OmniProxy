@@ -139,6 +139,8 @@ Delivered asynchronously to subscribers, one JSON object per event.
 - Dart → native: `MethodChannel("com.omniproxy/bridge").invokeMethod(method, requestJson)` → `responseJson` (both JSON strings).
 - Native → Dart events: `MethodChannel("com.omniproxy/events")`; Kotlin calls `invokeMethod("event", eventJson)`.
 - Go core is compiled with `gomobile bind` into an `.aar`; Kotlin host forwards channel calls into the bindings. The Android `VpnService` lives in the native layer and hands the TUN fd into the Go core before `connect`.
+- Events are **polled, not pushed**: the core buffers events in a bounded ring; Kotlin drains it on a HandlerThread timer and forwards to Dart. A native event callback into the Dart isolate would deadlock while the isolate is blocked inside a synchronous channel request.
+- Android supplies a minimal platform interface: `FdTunPlatform` duplicates the VpnService TUN fd into sing-box and returns a **passive** default-interface monitor (netlink monitors are banned on Android; the VpnService owns the TUN and its routing, so the monitor never reports a default interface or emits updates).
 - No native-side business logic in the channel host.
 
 ### 5.2 Linux / Windows — FFI (shared library)

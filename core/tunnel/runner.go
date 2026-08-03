@@ -14,6 +14,13 @@ type Runner interface {
 	Running() bool
 }
 
+// PlatformSetter is implemented by runners that accept a sing-box platform
+// interface. Android injects the VpnService TUN fd this way before VPN-mode
+// Start; other platforms leave the engine on its noop platform.
+type PlatformSetter interface {
+	SetPlatform(engine.Platform)
+}
+
 // InProcessRunner runs the sing-box engine directly in this process.
 type InProcessRunner struct {
 	eng    *engine.Engine
@@ -24,6 +31,10 @@ type InProcessRunner struct {
 func NewInProcessRunner(logger *log.Logger) *InProcessRunner {
 	return &InProcessRunner{eng: engine.New(engineLogSink{logger: logger}), logger: logger}
 }
+
+// SetPlatform implements PlatformSetter, injecting the platform interface (e.g.
+// Android FdTunPlatform) before Start.
+func (r *InProcessRunner) SetPlatform(pi engine.Platform) { r.eng.SetPlatformInterface(pi) }
 
 // Start implements Runner.
 func (r *InProcessRunner) Start(opts engine.Options) error {

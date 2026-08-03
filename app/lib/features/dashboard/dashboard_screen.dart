@@ -34,9 +34,10 @@ class DashboardScreen extends ConsumerWidget {
               if (connection.state == ConnectionState.error)
                 _ErrorBanner(connection: connection)
               else if (session != null &&
-                  connection.state != ConnectionState.disconnected)
+                  connection.state != ConnectionState.disconnected &&
+                  server != null)
                 _ServerCard(
-                  server: server!,
+                  server: server,
                   mode: session.mode,
                   startedAt: connection.state == ConnectionState.connected
                       ? session.startedAt

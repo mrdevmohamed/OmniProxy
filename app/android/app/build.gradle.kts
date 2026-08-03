@@ -40,6 +40,11 @@ kotlin {
     }
 }
 
+dependencies {
+    // Go core compiled with gomobile bind (docs/platform-notes.md §Android).
+    implementation(files("libs/omniproxy.aar"))
+}
+
 flutter {
     source = "../.."
 }

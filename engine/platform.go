@@ -9,6 +9,12 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
+// Platform is the sing-box platform interface hook, re-exported so the core can
+// inject a platform without importing sing-box directly. Android supplies the
+// VpnService TUN fd through it (see FdTunPlatform); other platforms leave it
+// nil and sing-box uses the noopPlatform behavior.
+type Platform = adapter.PlatformInterface
+
 // noopPlatform is a PlatformInterface that opts out of every platform hook.
 // sing-box then creates the TUN device itself (Linux root helper, Windows
 // Wintun). Android overrides this in the bridge layer to supply the

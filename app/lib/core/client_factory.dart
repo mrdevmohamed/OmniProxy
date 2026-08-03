@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'api_client.dart';
+import 'bridge/bridge_android.dart';
 import 'bridge/bridge_linux.dart';
 import 'bridge/bridge_transport.dart';
 import 'bridge_api_client.dart';
@@ -14,9 +15,12 @@ import 'mock_api_client.dart';
 ///   - Android: MethodChannel over gomobile bind (M7)
 ///   - Windows: `dart:ffi` into `omniproxy.dll` (M8)
 ///
-/// Until the M7/M8 transports land, non-Linux platforms fall back to the mock
-/// so the shell keeps running.
+/// Until the M8 transport lands, Windows falls back to the mock so the shell
+/// keeps running.
 ApiClient buildApiClient() {
+  if (Platform.isAndroid) {
+    return BridgeApiClient(AndroidBridge());
+  }
   if (Platform.isLinux) {
     return BridgeApiClient(createLinuxTransport());
   }

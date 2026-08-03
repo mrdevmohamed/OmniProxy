@@ -142,9 +142,6 @@ func buildOptions(opts Options) (option.Options, error) {
 				AutoRoute:     opts.Tun.autoRoute(),
 				Stack:         opts.Tun.stack(),
 				StrictRoute:   opts.Tun.StrictRoute,
-				InboundOptions: option.InboundOptions{
-					SniffEnabled: true,
-				},
 			},
 		}}
 	case ModeProxy:

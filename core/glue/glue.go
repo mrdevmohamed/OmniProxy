@@ -27,6 +27,7 @@ import (
 
 	"omniproxy/core"
 	"omniproxy/core/api"
+	"omniproxy/core/internal/ring"
 	"omniproxy/core/log"
 	"omniproxy/core/models"
 	"omniproxy/core/tunnel"
@@ -37,9 +38,7 @@ func main() {}
 var (
 	coreMu sync.Mutex
 	facade *core.Facade
-
-	eventMu sync.Mutex
-	events  []api.Event
+	events = ring.New(eventRingCap)
 )
 
 // eventRingCap bounds buffered events between polls (stateChanged, logAppended,
@@ -132,10 +131,7 @@ func omniproxy_request(method *C.char, requestJSON *C.char) *C.char {
 
 //export omniproxy_poll_events
 func omniproxy_poll_events() *C.char {
-	eventMu.Lock()
-	batch := events
-	events = nil
-	eventMu.Unlock()
+	batch := events.Drain()
 	if len(batch) == 0 {
 		return cString("[]")
 	}
@@ -144,15 +140,7 @@ func omniproxy_poll_events() *C.char {
 
 // enqueueEvent buffers one bridge event for the next poll. Runs on the core's
 // publisher goroutine; never blocks on the Dart side.
-func enqueueEvent(e api.Event) {
-	eventMu.Lock()
-	defer eventMu.Unlock()
-	events = append(events, e)
-	if len(events) > eventRingCap {
-		drop := len(events) - eventRingCap
-		events = append([]api.Event(nil), events[drop:]...)
-	}
-}
+func enqueueEvent(e api.Event) { events.Push(e) }
 
 //export omniproxy_shutdown
 func omniproxy_shutdown() {
@@ -162,9 +150,7 @@ func omniproxy_shutdown() {
 		_ = facade.Close()
 		facade = nil
 	}
-	eventMu.Lock()
-	events = nil
-	eventMu.Unlock()
+	events.Drain()
 }
 
 //export omniproxy_free_string

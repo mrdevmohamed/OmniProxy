@@ -33,6 +33,7 @@ app/windows/flutter/ephemeral/
 # Native / tooling
 app/android/app/src/main/assets/omniproxy.aar
 app/android/app/src/main/jniLibs/
+app/android/app/libs/
 app/linux/omniproxy/lib/
 app/windows/runner/omniproxy/
 wintun.dll
