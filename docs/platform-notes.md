@@ -1,0 +1,48 @@
+# Platform Notes
+
+Per-platform details for the Flutter ↔ Go bridge, TUN/privileges, and native glue. Read before touching any platform-specific code.
+
+## Cross-platform
+
+- One internal API contract (`docs/api-contract.md`) on every platform; bridges are pure transport.
+- Shared `.onnproxy` export format so profiles move between platforms cleanly.
+- Platform limitations must be surfaced in the UI, never silently degraded.
+
+## Android
+
+- **Service model:** a foreground `VpnProxyService` hosts the Go core in both connection modes and shows a persistent, non-dismissible notification while connected (PRD §3.1).
+  - **VPN mode (default):** an `android.net.VpnService` establishes the TUN; the resulting `ParcelFileDescriptor` fd is handed to the Go core, which feeds it to sing-box's TUN stack (build with `with_gvisor`).
+  - **Proxy mode:** no VpnService/permission flow; sing-box serves a SOCKS5+HTTP mixed inbound on `127.0.0.1:<port>`; the local address/port is surfaced in the UI.
+- **Go core packaging:** `gomobile bind` → `.aar` placed under `app/android/` and linked by Gradle. Kotlin `MainActivity`/`VpnProxyService` forward `MethodChannel("com.omniproxy/bridge")` calls into the bindings; events return via `MethodChannel("com.omniproxy/events")`.
+- **Credentials:** Android Keystore via the `SecretStore` interface (implemented in the native/bridge layer, not in core).
+- **Android specifics to honor (PRD):** auto-reconnect on network change/drop, doze-mode/battery guidance, background execution limits — test across OEM skins.
+- **Emulator:** `run_emu` (alias for `emulator -avd light_emulator`). VpnService TUN works on the emulator.
+
+## Linux
+
+- **TUN privileges (design):** creating a TUN interface requires root/CAP_NET_ADMIN. The core itself runs unprivileged. A small privileged helper (also Go, same workspace) is launched via `pkexec` on demand; it creates the TUN fd with `sing-tun` and passes the fd to the core over a Unix socket using `SCM_RIGHTS` (fd passing). sing-box consumes the existing fd — it does not create the interface itself.
+  - Helper scope is minimal: authenticate (pkexec), create fd, pass fd, exit. No tunnel logic in the helper.
+  - The core retries/waits for the fd with a timeout and reports `unauthorized` (PRD §3.3) with actionable UI text if pkexec is cancelled.
+- **Proxy mode:** no privileges needed; sing-box local inbound on loopback.
+- **Go core packaging:** `go build -buildmode=c-shared` → `libomniproxy.so`, loaded via `dart:ffi`. The helper is a separate binary under `tools/`.
+- **Credentials:** Secret Service / libsecret (`go-keyring`).
+- **Config dir:** `$XDG_CONFIG_HOME/omniproxy` (fallback `~/.config/omniproxy`); data/logs under `$XDG_DATA_HOME`/`$XDG_STATE_HOME`.
+- **Desktop integration:** integrate with NetworkManager/systemd-resolved handling to avoid DNS/routing conflicts (Phase 1 scope: keep to sing-box defaults; revisit in Phase 2).
+
+## Windows
+
+- **Go core packaging:** `go build -buildmode=c-shared` → `omniproxy.dll`, loaded via `dart:ffi`; `wintun.dll` bundled next to the binary for TUN (sing-box/Wintun).
+- **TUN:** Wintun driver. Elevated privileges for interface creation are handled per sing-box's Windows model; the FFI process is the app process.
+- **Background service model (PRD §3.2):** a separate Windows service is a Phase 1.5+ concern. MVP uses the in-process DLL + FFI; note the limitation in the UI if applicable.
+- **Credentials:** Windows Credential Manager / DPAPI (`go-keyring`).
+- **Config dir:** `%APPDATA%\OmniProxy`.
+- **NOT TESTABLE on the Linux dev host** — this platform is code-complete only; verify on a Windows machine or CI before release.
+
+## Permission matrix (MVP)
+
+| Action | Android | Linux | Windows |
+|---|---|---|---|
+| TUN interface | VpnService grant | pkexec helper (fd pass) | Wintun (in-process) |
+| Connect (VPN mode) | requires VpnService consent | requires helper success | requires wintun.dll present |
+| Connect (proxy mode) | none | none | none |
+| Secure storage | Keystore | libsecret | Credential Manager/DPAPI |
