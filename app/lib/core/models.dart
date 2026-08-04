@@ -230,6 +230,36 @@ class SshSettings {
       };
 }
 
+/// `ServerProfile.reality` — reserved VLESS Reality options (Phase 2).
+class RealitySettings {
+  const RealitySettings({
+    this.enabled = false,
+    this.publicKey,
+    this.shortId,
+    this.spiderX,
+  });
+
+  final bool enabled;
+  final String? publicKey;
+  final String? shortId;
+  final String? spiderX;
+
+  factory RealitySettings.fromJson(Map<String, dynamic> json) =>
+      RealitySettings(
+        enabled: json['enabled'] == true,
+        publicKey: json['publicKey'] as String?,
+        shortId: json['shortId'] as String?,
+        spiderX: json['spiderX'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        if (publicKey != null) 'publicKey': publicKey,
+        if (shortId != null) 'shortId': shortId,
+        if (spiderX != null) 'spiderX': spiderX,
+      };
+}
+
 /// `ServerProfile` — `docs/api-contract.md` §2.1.
 class ServerProfile {
   const ServerProfile({
@@ -250,6 +280,10 @@ class ServerProfile {
     this.globalPadding = false,
     this.authenticatedLength = false,
     this.packetEncoding,
+    this.enabled = true,
+    this.group,
+    this.tags,
+    this.reality,
     this.favorite = false,
     this.lastLatencyMs = 0,
     this.lastTestedAt,
@@ -274,6 +308,10 @@ class ServerProfile {
   final bool globalPadding;
   final bool authenticatedLength;
   final String? packetEncoding;
+  final bool enabled;
+  final String? group;
+  final List<String>? tags;
+  final RealitySettings? reality;
   final bool favorite;
   final int lastLatencyMs;
   final DateTime? lastTestedAt;
@@ -298,6 +336,10 @@ class ServerProfile {
     bool? globalPadding,
     bool? authenticatedLength,
     String? packetEncoding,
+    bool? enabled,
+    String? group,
+    List<String>? tags,
+    RealitySettings? reality,
     bool? favorite,
     int? lastLatencyMs,
     DateTime? lastTestedAt,
@@ -322,6 +364,10 @@ class ServerProfile {
         globalPadding: globalPadding ?? this.globalPadding,
         authenticatedLength: authenticatedLength ?? this.authenticatedLength,
         packetEncoding: packetEncoding ?? this.packetEncoding,
+        enabled: enabled ?? this.enabled,
+        group: group ?? this.group,
+        tags: tags ?? this.tags,
+        reality: reality ?? this.reality,
         favorite: favorite ?? this.favorite,
         lastLatencyMs: lastLatencyMs ?? this.lastLatencyMs,
         lastTestedAt: lastTestedAt ?? this.lastTestedAt,
@@ -354,6 +400,14 @@ class ServerProfile {
         globalPadding: json['globalPadding'] == true,
         authenticatedLength: json['authenticatedLength'] == true,
         packetEncoding: json['packetEncoding'] as String?,
+        enabled: json['enabled'] != false,
+        group: json['group'] as String?,
+        tags: json['tags'] == null
+            ? null
+            : (json['tags'] as List<dynamic>).cast<String>(),
+        reality: json['reality'] == null
+            ? null
+            : RealitySettings.fromJson(json['reality'] as Map<String, dynamic>),
         favorite: json['favorite'] == true,
         lastLatencyMs: json['lastLatencyMs'] as int? ?? 0,
         lastTestedAt: json['lastTestedAt'] == null
@@ -381,11 +435,78 @@ class ServerProfile {
         if (globalPadding) 'globalPadding': globalPadding,
         if (authenticatedLength) 'authenticatedLength': authenticatedLength,
         if (packetEncoding != null) 'packetEncoding': packetEncoding,
+        'enabled': enabled,
+        if (group != null) 'group': group,
+        if (tags != null) 'tags': tags,
+        if (reality != null) 'reality': reality!.toJson(),
         'favorite': favorite,
         'lastLatencyMs': lastLatencyMs,
         'lastTestedAt': lastTestedAt?.toUtc().toIso8601String(),
         'createdAt': createdAt.toUtc().toIso8601String(),
         'updatedAt': updatedAt.toUtc().toIso8601String(),
+      };
+}
+
+/// Sort orders for `listServers` — `docs/api-contract.md` §3.
+enum ServerSort {
+  name('name'),
+  updatedAt('updatedAt'),
+  latency('latency');
+
+  const ServerSort(this.wire);
+
+  final String wire;
+
+  static ServerSort fromWire(String? value) {
+    for (final sort in ServerSort.values) {
+      if (sort.wire == value) return sort;
+    }
+    return ServerSort.name;
+  }
+}
+
+/// `listServers` request query — all fields optional.
+class ServerListQuery {
+  const ServerListQuery({
+    this.search = '',
+    this.protocol,
+    this.group,
+    this.enabled,
+    this.favorite,
+    this.sort = ServerSort.name,
+  });
+
+  final String search;
+  final ServerProtocol? protocol;
+  final String? group;
+  final bool? enabled;
+  final bool? favorite;
+  final ServerSort sort;
+
+  ServerListQuery copyWith({
+    String? search,
+    ServerProtocol? protocol,
+    String? group,
+    bool? enabled,
+    bool? favorite,
+    ServerSort? sort,
+  }) =>
+      ServerListQuery(
+        search: search ?? this.search,
+        protocol: protocol ?? this.protocol,
+        group: group ?? this.group,
+        enabled: enabled ?? this.enabled,
+        favorite: favorite ?? this.favorite,
+        sort: sort ?? this.sort,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (search.isNotEmpty) 'search': search,
+        if (protocol != null) 'protocol': protocol!.wire,
+        if (group != null && group!.isNotEmpty) 'group': group,
+        if (enabled != null) 'enabled': enabled,
+        if (favorite != null) 'favorite': favorite,
+        if (sort != ServerSort.name) 'sort': sort.wire,
       };
 }
 

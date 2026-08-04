@@ -1,8 +1,11 @@
 // Package config implements the Configuration Engine (PRD §7.1): validation and
-// persistence of server profiles and application settings. The on-disk
-// document is encrypted at rest (AES-256-GCM) under a data key held in OS
-// secure storage, and credential values live only in that secure storage —
-// never in the plaintext configuration (PRD §9).
+// persistence of application settings. The on-disk document is encrypted at
+// rest (AES-256-GCM) under a data key held in OS secure storage (PRD §9).
+//
+// Server profiles are persisted by the store package (SQLite); the encrypted
+// settings blob may still contain a legacy "servers" section from pre-migration
+// builds. LoadLegacyServers reads that section once so core can import the
+// profiles into the server repository.
 package config
 
 import (
@@ -17,6 +20,7 @@ import (
 	"omniproxy/core/log"
 	"omniproxy/core/models"
 	"omniproxy/core/secret"
+	"omniproxy/core/store"
 )
 
 const currentVersion = 1
@@ -33,8 +37,6 @@ type Store interface {
 var (
 	// ErrNotExist indicates no configuration has been stored yet.
 	ErrNotExist = errors.New("config: not found")
-	// ErrServerNotFound indicates a server id does not exist.
-	ErrServerNotFound = errors.New("config: server not found")
 )
 
 // FileStore persists the configuration blob to a file (atomic write, 0600).
@@ -87,14 +89,7 @@ func (fs *FileStore) Save(data []byte) error {
 	return os.Rename(tmp.Name(), fs.path)
 }
 
-// Secret reference identifiers for ServerProfile fields stored in SecretStore.
-const (
-	RefPassword      = "password"
-	RefUUID          = "uuid"
-	RefSSHPrivateKey = "ssh.privatekey"
-)
-
-// Engine is the Configuration Engine. It owns the in-memory config state and
+// Engine is the Configuration Engine. It owns the in-memory settings state and
 // synchronizes it with the encrypted store on every mutation.
 type Engine struct {
 	store   Store
@@ -106,9 +101,16 @@ type Engine struct {
 	cfg configDoc
 }
 
-// configDoc is the on-disk structure (before encryption). Servers are stored
-// sanitized: credential values live in SecretStore, referenced by SecretRefs.
+// configDoc is the on-disk structure (before encryption).
 type configDoc struct {
+	Version  int                `json:"version"`
+	Settings models.AppSettings `json:"settings"`
+}
+
+// legacyDoc is the pre-migration on-disk structure (v1) that also embedded
+// server profiles. It is read only by LoadLegacyServers during the one-time
+// migration to repository-backed server persistence.
+type legacyDoc struct {
 	Version  int                `json:"version"`
 	Settings models.AppSettings `json:"settings"`
 	Servers  []*persistedServer `json:"servers,omitempty"`
@@ -117,6 +119,47 @@ type configDoc struct {
 type persistedServer struct {
 	*models.ServerProfile
 	SecretRefs []string `json:"secretRefs,omitempty"`
+}
+
+// LoadLegacyServers reads a pre-migration configuration blob and returns the
+// server profiles embedded in it, with credentials restored from SecretStore
+// and registered with the logger redactor. It returns nil when no blob (or no
+// legacy servers) exist. Callers that find a corrupt blob should log and skip
+// the migration; config.New will reset the store to defaults on next load.
+func LoadLegacyServers(store Store, secrets secret.Store, logger *log.Logger) ([]*models.ServerProfile, error) {
+	if store == nil || secrets == nil || logger == nil {
+		return nil, errors.New("config: nil dependency")
+	}
+	key, err := secret.GetOrCreateDataKey(secrets, "")
+	if err != nil {
+		return nil, fmt.Errorf("config: data key: %w", err)
+	}
+	raw, err := store.Load()
+	if err != nil {
+		if errors.Is(err, ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	plain, err := secret.Open(key, raw)
+	if err != nil {
+		return nil, fmt.Errorf("config: legacy blob: %w", err)
+	}
+	var doc legacyDoc
+	if err := json.Unmarshal(plain, &doc); err != nil {
+		return nil, fmt.Errorf("config: legacy blob: %w", err)
+	}
+	out := make([]*models.ServerProfile, 0, len(doc.Servers))
+	for _, ps := range doc.Servers {
+		if err := restoreSecrets(secrets, logger, ps); err != nil {
+			return nil, err
+		}
+		out = append(out, ps.ServerProfile.Clone())
+	}
+	if len(doc.Servers) > 0 {
+		logger.Infof("config", "found %d legacy server profile(s) to migrate", len(doc.Servers))
+	}
+	return out, nil
 }
 
 // New opens (or initializes) the configuration engine. A corrupt or tampered
@@ -157,118 +200,7 @@ func (e *Engine) UpdateSettings(s models.AppSettings) (models.AppSettings, error
 	return s, nil
 }
 
-// ListServers returns clones of all server profiles with secrets restored.
-func (e *Engine) ListServers() []*models.ServerProfile {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	out := make([]*models.ServerProfile, 0, len(e.cfg.Servers))
-	for _, ps := range e.cfg.Servers {
-		out = append(out, ps.ServerProfile.Clone())
-	}
-	return out
-}
-
-// GetServer returns a clone of one profile, or ErrServerNotFound.
-func (e *Engine) GetServer(id string) (*models.ServerProfile, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	for _, ps := range e.cfg.Servers {
-		if ps.ID == id {
-			return ps.ServerProfile.Clone(), nil
-		}
-	}
-	return nil, ErrServerNotFound
-}
-
-// AddServer validates and persists a new profile, returning its assigned id.
-func (e *Engine) AddServer(p *models.ServerProfile) (string, error) {
-	if err := p.Validate(); err != nil {
-		return "", err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	cp := p.Clone()
-	now := time.Now().UTC()
-	if cp.ID == "" {
-		cp.ID = models.NewID()
-	}
-	cp.CreatedAt, cp.UpdatedAt = now, now
-
-	e.cfg.Servers = append(e.cfg.Servers, &persistedServer{ServerProfile: cp})
-	if err := e.saveLocked(); err != nil {
-		return "", err
-	}
-	e.logger.Redactor().Add(cp.Password, cp.UUID, cp.SSH.PrivateKey)
-	e.logger.Infof("config", "added server %q (%s)", cp.Name, cp.ID)
-	return cp.ID, nil
-}
-
-// UpdateServer fully replaces an existing profile (full replace semantics).
-func (e *Engine) UpdateServer(p *models.ServerProfile) error {
-	if err := p.Validate(); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	var found *persistedServer
-	for _, ps := range e.cfg.Servers {
-		if ps.ID == p.ID {
-			found = ps
-			break
-		}
-	}
-	if found == nil {
-		return ErrServerNotFound
-	}
-
-	// Drop superseded secrets before re-storing the new values on save.
-	for _, ref := range secretRefsFor(found.ServerProfile) {
-		_ = e.secrets.Delete(secretStoreKey(p.ID, ref))
-	}
-
-	cp := p.Clone()
-	cp.CreatedAt = found.ServerProfile.CreatedAt
-	cp.UpdatedAt = time.Now().UTC()
-	found.ServerProfile = cp
-
-	if err := e.saveLocked(); err != nil {
-		return err
-	}
-	e.logger.Redactor().Add(cp.Password, cp.UUID, cp.SSH.PrivateKey)
-	e.logger.Infof("config", "updated server %q", cp.Name)
-	return nil
-}
-
-// DeleteServer removes a profile and its stored secrets.
-func (e *Engine) DeleteServer(id string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	idx := -1
-	for i, ps := range e.cfg.Servers {
-		if ps.ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return ErrServerNotFound
-	}
-
-	for _, ref := range secretRefsFor(e.cfg.Servers[idx].ServerProfile) {
-		_ = e.secrets.Delete(secretStoreKey(id, ref))
-	}
-	e.cfg.Servers = append(e.cfg.Servers[:idx], e.cfg.Servers[idx+1:]...)
-	if err := e.saveLocked(); err != nil {
-		return err
-	}
-	e.logger.Infof("config", "deleted server %s", id)
-	return nil
-}
-
-// load reads, decrypts, and restores the configuration from the store.
+// load reads, decrypts, and normalizes the settings from the store.
 func (e *Engine) load() error {
 	raw, err := e.store.Load()
 	if err != nil {
@@ -292,13 +224,7 @@ func (e *Engine) load() error {
 	}
 
 	doc.Settings.Normalize()
-	for _, ps := range doc.Servers {
-		if err := e.restoreSecrets(ps); err != nil {
-			return fmt.Errorf("config: restore server %s: %w", ps.ID, err)
-		}
-	}
 	e.cfg = doc
-	e.logger.Infof("config", "loaded %d server profile(s)", len(doc.Servers))
 	return nil
 }
 
@@ -319,22 +245,13 @@ func (e *Engine) recoverCorrupt(cause error) {
 	}
 }
 
-// saveLocked persists the in-memory config, externalizing secrets. Caller holds e.mu.
+// saveLocked persists the in-memory settings. Caller holds e.mu.
 func (e *Engine) saveLocked() error {
 	doc := configDoc{
 		Version:  currentVersion,
 		Settings: e.cfg.Settings,
 	}
 	doc.Settings.Normalize()
-
-	doc.Servers = make([]*persistedServer, 0, len(e.cfg.Servers))
-	for _, ps := range e.cfg.Servers {
-		san, err := e.sanitize(ps)
-		if err != nil {
-			return err
-		}
-		doc.Servers = append(doc.Servers, san)
-	}
 
 	plain, err := json.Marshal(doc)
 	if err != nil {
@@ -350,77 +267,31 @@ func (e *Engine) saveLocked() error {
 	return nil
 }
 
-// sanitize produces the persisted representation, moving credential values into
-// SecretStore. Caller holds e.mu.
-func (e *Engine) sanitize(ps *persistedServer) (*persistedServer, error) {
-	cp := ps.ServerProfile.Clone()
-	refs := secretRefsFor(ps.ServerProfile)
-	for _, ref := range refs {
-		key := secretStoreKey(cp.ID, ref)
-		if err := e.secrets.Set(key, secretValueFor(ps.ServerProfile, ref)); err != nil {
-			return nil, fmt.Errorf("config: store secret %s: %w", ref, err)
-		}
-	}
-	cp.Password, cp.UUID, cp.SSH.PrivateKey = "", "", ""
-	return &persistedServer{ServerProfile: cp, SecretRefs: refs}, nil
-}
-
-// restoreSecrets fills credential values from SecretStore and registers them
-// with the logger redactor. Caller holds e.mu.
-func (e *Engine) restoreSecrets(ps *persistedServer) error {
+// restoreSecrets fills a legacy profile's credential values from SecretStore and
+// registers them with the logger redactor.
+func restoreSecrets(secrets secret.Store, logger *log.Logger, ps *persistedServer) error {
 	for _, ref := range ps.SecretRefs {
-		v, err := e.secrets.Get(secretStoreKey(ps.ID, ref))
+		v, err := secrets.Get(store.SecretStoreKey(ps.ID, ref))
 		if err != nil {
 			if errors.Is(err, secret.ErrNotFound) {
-				e.logger.Warnf("config", "missing stored secret %q for server %s; skipping", ref, ps.ID)
+				logger.Warnf("config", "missing stored secret %q for server %s; skipping", ref, ps.ID)
 				continue
 			}
 			return err
 		}
 		setSecretValue(ps.ServerProfile, ref, v)
 	}
-	e.logger.Redactor().Add(ps.Password, ps.UUID, ps.SSH.PrivateKey)
+	logger.Redactor().Add(ps.Password, ps.UUID, ps.SSH.PrivateKey)
 	return nil
-}
-
-func secretRefsFor(p *models.ServerProfile) []string {
-	var refs []string
-	if p.Password != "" {
-		refs = append(refs, RefPassword)
-	}
-	if p.UUID != "" {
-		refs = append(refs, RefUUID)
-	}
-	if p.SSH.PrivateKey != "" {
-		refs = append(refs, RefSSHPrivateKey)
-	}
-	return refs
-}
-
-func secretStoreKey(serverID, ref string) string {
-	return "omniproxy.server." + serverID + "." + ref
-}
-
-func secretValueFor(p *models.ServerProfile, ref string) string {
-	switch ref {
-	case RefPassword:
-		return p.Password
-	case RefUUID:
-		return p.UUID
-	case RefSSHPrivateKey:
-		return p.SSH.PrivateKey
-	default:
-		return ""
-	}
 }
 
 func setSecretValue(p *models.ServerProfile, ref, v string) {
 	switch ref {
-	case RefPassword:
+	case store.RefPassword:
 		p.Password = v
-	case RefUUID:
+	case store.RefUUID:
 		p.UUID = v
-	case RefSSHPrivateKey:
+	case store.RefSSHPrivateKey:
 		p.SSH.PrivateKey = v
 	}
 }

@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'api_client.dart';
 import 'models.dart';
+import 'share_links.dart';
 
 /// In-memory implementation of the canonical bridge contract
 /// (`docs/api-contract.md`), used to wire the M5 Flutter shell before the
@@ -48,6 +49,8 @@ class MockApiClient implements ApiClient {
         port: 443,
         uuid: '11111111-1111-4111-8111-111111111111',
         tls: const TlsSettings(enabled: true, serverName: 'jp.example.net'),
+        group: 'Asia',
+        tags: const ['premium', 'low-latency'],
         favorite: true,
         createdAt: now,
         updatedAt: now,
@@ -60,6 +63,7 @@ class MockApiClient implements ApiClient {
         port: 8388,
         password: 'change-me',
         cipher: 'aes-128-gcm',
+        group: 'Europe',
         createdAt: now,
         updatedAt: now,
       ),
@@ -71,6 +75,7 @@ class MockApiClient implements ApiClient {
         port: 8080,
         username: 'proxy',
         password: 'secret',
+        enabled: false,
         createdAt: now,
         updatedAt: now,
       ),
@@ -149,7 +154,50 @@ class MockApiClient implements ApiClient {
       );
 
   @override
-  Future<List<ServerProfile>> listServers() async => List.of(_servers);
+  Future<List<ServerProfile>> listServers({ServerListQuery? query}) async {
+    var result = List<ServerProfile>.of(_servers);
+    final q = query ?? const ServerListQuery();
+
+    if (q.search.isNotEmpty) {
+      final lower = q.search.toLowerCase();
+      result = result.where((s) {
+        return s.name.toLowerCase().contains(lower) ||
+            s.address.toLowerCase().contains(lower) ||
+            (s.username?.toLowerCase().contains(lower) ?? false) ||
+            (s.group?.toLowerCase().contains(lower) ?? false) ||
+            s.protocol.wire.toLowerCase().contains(lower);
+      }).toList();
+    }
+    if (q.protocol != null) {
+      result = result.where((s) => s.protocol == q.protocol).toList();
+    }
+    if (q.group != null && q.group!.isNotEmpty) {
+      result = result.where((s) => s.group == q.group).toList();
+    }
+    if (q.enabled != null) {
+      result = result.where((s) => s.enabled == q.enabled).toList();
+    }
+    if (q.favorite != null) {
+      result = result.where((s) => s.favorite == q.favorite).toList();
+    }
+
+    result.sort((a, b) {
+      if (a.favorite != b.favorite) return a.favorite ? -1 : 1;
+      final cmp = switch (q.sort) {
+        ServerSort.name => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        ServerSort.updatedAt => b.updatedAt.compareTo(a.updatedAt),
+        ServerSort.latency => () {
+          if (a.lastLatencyMs == 0 && b.lastLatencyMs == 0) return 0;
+          if (a.lastLatencyMs == 0) return 1;
+          if (b.lastLatencyMs == 0) return -1;
+          return b.lastLatencyMs.compareTo(a.lastLatencyMs);
+        }(),
+      };
+      if (cmp != 0) return cmp;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+    return result;
+  }
 
   @override
   Future<ServerProfile> getServer(String id) async => _find(id);
@@ -204,6 +252,24 @@ class MockApiClient implements ApiClient {
     }
     _servers.removeAt(index);
     _addLog('server', 'Deleted server "$id"');
+  }
+
+  @override
+  Future<String> duplicateServer(String id) async {
+    final src = _find(id);
+    final now = _now();
+    final dup = src.copyWith(
+      id: _uuid(),
+      name: '${src.name} (copy)',
+      favorite: false,
+      lastLatencyMs: 0,
+      lastTestedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    );
+    _servers.add(dup);
+    _addLog('server', 'Duplicated server "${src.name}"');
+    return dup.id;
   }
 
   @override
@@ -267,10 +333,18 @@ class MockApiClient implements ApiClient {
   }
 
   @override
-  Future<String> exportServers({List<String>? ids}) async {
+  Future<String> exportServers(
+      {List<String>? ids, String format = 'onnproxy'}) async {
     final selected = ids == null || ids.isEmpty
         ? _servers
         : _servers.where((s) => ids.contains(s.id)).toList();
+
+    if (format == 'links') {
+      final links = selected.map((s) => shareLinkFor(s)).whereType<String>().toList();
+      return links.join('\n');
+    }
+
+    // Default: onnproxy envelope
     final envelopes = selected
         .map((s) => {'format': 'onnproxy', 'version': 1, 'server': s.toJson()})
         .toList();

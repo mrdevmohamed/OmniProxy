@@ -62,7 +62,7 @@ func mustOK(t *testing.T, resp api.Response) {
 }
 
 func serverBody(name string) string {
-	return `{"server":{"name":"` + name + `","protocol":"vless","address":"10.0.0.1","port":443,"uuid":"11111111-1111-4111-8111-111111111111"}}`
+	return `{"server":{"name":"` + name + `","protocol":"vless","address":"10.0.0.1","port":443,"uuid":"11111111-1111-4111-8111-111111111111","enabled":true}}`
 }
 
 func waitState(t *testing.T, f *Facade, want models.ConnectionState) {
@@ -112,7 +112,7 @@ func TestFacadeServerCRUD(t *testing.T) {
 		t.Fatalf("unexpected name: %v", name)
 	}
 
-	resp = request(t, f, api.MethodUpdateServer, `{"server":{"id":"`+id+`","name":"beta","protocol":"vless","address":"10.0.0.2","port":8443,"uuid":"11111111-1111-4111-8111-111111111111"}}`)
+	resp = request(t, f, api.MethodUpdateServer, `{"server":{"id":"`+id+`","name":"beta","protocol":"vless","address":"10.0.0.2","port":8443,"uuid":"11111111-1111-4111-8111-111111111111","enabled":true}}`)
 	mustOK(t, resp)
 	if name := resp.Data.(map[string]any)["name"]; name != "beta" {
 		t.Fatalf("update did not persist: %v", resp.Data)
@@ -167,6 +167,87 @@ func jsonString(s string) string {
 	return string(b)
 }
 
+func TestFacadeDuplicateServer(t *testing.T) {
+	f := newTestFacade(t, &fakeRunner{})
+	resp := request(t, f, api.MethodAddServer, serverBody("alpha"))
+	mustOK(t, resp)
+	id := resp.Data.(map[string]any)["id"].(string)
+
+	resp = request(t, f, api.MethodDuplicateServer, `{"id":"`+id+`"}`)
+	mustOK(t, resp)
+	dupID := resp.Data.(map[string]any)["id"].(string)
+	if dupID == id || dupID == "" {
+		t.Fatalf("expected fresh id, got %q (original %q)", dupID, id)
+	}
+
+	// Duplicated profile has a copy name and works standalone.
+	resp = request(t, f, api.MethodGetServer, `{"id":"`+dupID+`"}`)
+	mustOK(t, resp)
+	if name := resp.Data.(map[string]any)["name"]; name != "alpha (copy)" {
+		t.Fatalf("unexpected copy name: %v", name)
+	}
+
+	resp = request(t, f, api.MethodDuplicateServer, `{"id":"nope"}`)
+	if resp.OK || resp.Error.Code != api.ErrCodeNotFound {
+		t.Fatalf("expected not_found, got %+v", resp)
+	}
+}
+
+func TestFacadeListServersQuery(t *testing.T) {
+	f := newTestFacade(t, &fakeRunner{})
+	mustOK(t, request(t, f, api.MethodAddServer, serverBody("Alpha")))
+	mustOK(t, request(t, f, api.MethodAddServer, serverBody("Bravo")))
+
+	// Disable the first server.
+	alphaID := ""
+	{
+		resp := request(t, f, api.MethodListServers, "{}")
+		mustOK(t, resp)
+		for _, s := range resp.Data.(map[string]any)["servers"].([]any) {
+			sm := s.(map[string]any)
+			if sm["name"] == "Alpha" {
+				alphaID = sm["id"].(string)
+			}
+		}
+	}
+	mustOK(t, request(t, f, api.MethodUpdateServer,
+		`{"server":{"id":"`+alphaID+`","name":"Alpha","protocol":"vless","address":"10.0.0.1","port":443,"uuid":"11111111-1111-4111-8111-111111111111","enabled":false}}`))
+
+	resp := request(t, f, api.MethodListServers, `{"enabled":true,"sort":"name"}`)
+	mustOK(t, resp)
+	servers := resp.Data.(map[string]any)["servers"].([]any)
+	if len(servers) != 1 || servers[0].(map[string]any)["name"] != "Bravo" {
+		t.Fatalf("enabled filter failed: %v", servers)
+	}
+
+	resp = request(t, f, api.MethodListServers, `{"search":"alp"}`)
+	mustOK(t, resp)
+	servers = resp.Data.(map[string]any)["servers"].([]any)
+	if len(servers) != 1 || servers[0].(map[string]any)["name"] != "Alpha" {
+		t.Fatalf("search filter failed: %v", servers)
+	}
+}
+
+func TestFacadeExportLinks(t *testing.T) {
+	f := newTestFacade(t, &fakeRunner{})
+	resp := request(t, f, api.MethodAddServer, serverBody("alpha"))
+	mustOK(t, resp)
+	id := resp.Data.(map[string]any)["id"].(string)
+
+	resp = request(t, f, api.MethodExportServers, `{"format":"links","ids":["`+id+`"]}`)
+	mustOK(t, resp)
+	blob := resp.Data.(map[string]any)["blob"].(string)
+	if blob == "" || blob[:6] != "vless:" {
+		t.Fatalf("expected a vless link, got %q", blob)
+	}
+
+	// Unknown format is a validation error.
+	resp = request(t, f, api.MethodExportServers, `{"format":"bogus"}`)
+	if resp.OK || resp.Error.Code != api.ErrCodeValidation {
+		t.Fatalf("expected validation_failed for bad format, got %+v", resp)
+	}
+}
+
 func TestFacadeSettings(t *testing.T) {
 	f := newTestFacade(t, &fakeRunner{})
 	resp := request(t, f, api.MethodGetSettings, "{}")
@@ -202,7 +283,7 @@ func TestFacadeConnectDisconnect(t *testing.T) {
 	if resp.OK || resp.Error.Code != api.ErrCodeConnected {
 		t.Fatalf("expected connected error, got %+v", resp)
 	}
-	resp = request(t, f, api.MethodUpdateServer, `{"server":{"id":"`+id+`","name":"alpha","protocol":"vless","address":"10.0.0.1","port":443,"uuid":"11111111-1111-4111-8111-111111111111"}}`)
+	resp = request(t, f, api.MethodUpdateServer, `{"server":{"id":"`+id+`","name":"alpha","protocol":"vless","address":"10.0.0.1","port":443,"uuid":"11111111-1111-4111-8111-111111111111","enabled":true}}`)
 	if resp.OK || resp.Error.Code != api.ErrCodeConnected {
 		t.Fatalf("expected connected error on update, got %+v", resp)
 	}
@@ -221,6 +302,19 @@ func TestFacadeConnectUnknownServer(t *testing.T) {
 	resp := request(t, f, api.MethodConnect, `{"serverId":"nope","mode":"proxy"}`)
 	if resp.OK || resp.Error.Code != api.ErrCodeNotFound {
 		t.Fatalf("expected not_found, got %+v", resp)
+	}
+}
+
+func TestFacadeConnectDisabled(t *testing.T) {
+	f := newTestFacade(t, &fakeRunner{})
+	resp := request(t, f, api.MethodAddServer,
+		`{"server":{"name":"off","protocol":"vless","address":"10.0.0.1","port":443,"uuid":"11111111-1111-4111-8111-111111111111","enabled":false}}`)
+	mustOK(t, resp)
+	id := resp.Data.(map[string]any)["id"].(string)
+
+	resp = request(t, f, api.MethodConnect, `{"serverId":"`+id+`","mode":"proxy"}`)
+	if resp.OK || resp.Error.Code != api.ErrCodeValidation {
+		t.Fatalf("expected validation_failed for disabled server, got %+v", resp)
 	}
 }
 

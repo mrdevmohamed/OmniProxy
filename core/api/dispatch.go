@@ -39,7 +39,11 @@ func (d *Dispatcher) dispatch(method string, requestJSON []byte) Response {
 	case MethodGetVersion:
 		return d.ok(d.GetVersion())
 	case MethodListServers:
-		return d.ok(d.ListServers())
+		var req ServerListRequest
+		if err := decode(&req); err != nil {
+			return invalid(err)
+		}
+		return d.ok(d.ListServers(req))
 	case MethodGetServer:
 		var req IDRequest
 		if err := decode(&req); err != nil {
@@ -70,6 +74,12 @@ func (d *Dispatcher) dispatch(method string, requestJSON []byte) Response {
 			return invalid(err)
 		}
 		return d.result(nil, d.DeleteServer(req.ID))
+	case MethodDuplicateServer:
+		var req DuplicateRequest
+		if err := decode(&req); err != nil {
+			return invalid(err)
+		}
+		return d.result(d.DuplicateServer(req.ID))
 	case MethodImportServers:
 		var req ImportRequest
 		if err := decode(&req); err != nil {

@@ -15,7 +15,9 @@ type stubHandler struct{}
 func (stubHandler) GetVersion() GetVersionResponse {
 	return GetVersionResponse{Version: "1.0.0", EngineVersion: "v1.13.15", Platform: "linux"}
 }
-func (stubHandler) ListServers() ServerListResponse { return ServerListResponse{} }
+func (stubHandler) ListServers(req ServerListRequest) ServerListResponse {
+	return ServerListResponse{Servers: []*models.ServerProfile{{Name: req.Search + ":" + string(req.Sort)}}}
+}
 func (stubHandler) GetServer(id string) (*models.ServerProfile, error) {
 	if id == "missing" {
 		return nil, errStubNotFound
@@ -29,6 +31,12 @@ func (stubHandler) UpdateServer(s *models.ServerProfile) (*models.ServerProfile,
 	return s, nil
 }
 func (stubHandler) DeleteServer(id string) error { return nil }
+func (stubHandler) DuplicateServer(id string) (IDResponse, error) {
+	if id == "missing" {
+		return IDResponse{}, errStubNotFound
+	}
+	return IDResponse{ID: id + "-copy"}, nil
+}
 func (stubHandler) ImportServers(req ImportRequest) (ImportResponse, error) {
 	return ImportResponse{Added: 1, Failed: 0}, nil
 }
@@ -125,6 +133,49 @@ func TestDispatchConnectDefaults(t *testing.T) {
 	m := resp.Data.(map[string]any)
 	if m["state"] != "connecting" {
 		t.Fatalf("unexpected state: %v", m)
+	}
+}
+
+func TestDispatchListServersQuery(t *testing.T) {
+	resp := decodeResponse(t, newTestDispatcher().Dispatch(MethodListServers, []byte(`{"search":"fra","sort":"updatedAt"}`)))
+	if !resp.OK {
+		t.Fatalf("unexpected envelope: %+v", resp)
+	}
+	servers := resp.Data.(map[string]any)["servers"].([]any)
+	got := servers[0].(map[string]any)["name"]
+	if got != "fra:updatedAt" {
+		t.Fatalf("query params not forwarded: %v", got)
+	}
+	// Empty body must still work (defaults).
+	resp = decodeResponse(t, newTestDispatcher().Dispatch(MethodListServers, nil))
+	if !resp.OK {
+		t.Fatalf("empty listServers body failed: %+v", resp)
+	}
+}
+
+func TestDispatchDuplicateServer(t *testing.T) {
+	resp := decodeResponse(t, newTestDispatcher().Dispatch(MethodDuplicateServer, []byte(`{"id":"abc"}`)))
+	if !resp.OK {
+		t.Fatalf("unexpected envelope: %+v", resp)
+	}
+	if resp.Data.(map[string]any)["id"] != "abc-copy" {
+		t.Fatalf("unexpected duplicate data: %v", resp.Data)
+	}
+
+	resp = decodeResponse(t, newTestDispatcher().Dispatch(MethodDuplicateServer, []byte(`{"id":"missing"}`)))
+	if resp.OK || resp.Error == nil || resp.Error.Code != ErrCodeNotFound {
+		t.Fatalf("unexpected envelope: %+v", resp)
+	}
+}
+
+func TestDispatchExportServersFormat(t *testing.T) {
+	resp := decodeResponse(t, newTestDispatcher().Dispatch(MethodExportServers, []byte(`{"format":"links","ids":["a"]}`)))
+	if !resp.OK {
+		t.Fatalf("unexpected envelope: %+v", resp)
+	}
+	m := resp.Data.(map[string]any)
+	if m["format"] != "onnproxy" {
+		t.Fatalf("stub ignores format, envelope format should be onnproxy: %v", m)
 	}
 }
 

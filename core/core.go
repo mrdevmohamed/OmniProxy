@@ -7,6 +7,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"omniproxy/core/models"
 	"omniproxy/core/secret"
 	"omniproxy/core/server"
+	storepkg "omniproxy/core/store"
 	"omniproxy/core/tunnel"
 	"omniproxy/core/vpn"
 )
@@ -29,6 +31,9 @@ const (
 )
 
 const configFileName = "omniproxy.conf"
+
+// dbFileName is the SQLite store backing server profiles.
+const dbFileName = "omniproxy.db"
 
 // errConnected is returned when an operation requires a disconnected state.
 var errConnected = errors.New("core: server is connected; disconnect first")
@@ -60,6 +65,7 @@ type Facade struct {
 	subscribed bool
 	eventSet   map[string]bool
 	sink       api.EventSink
+	closers    []interface{ Close() error }
 }
 
 // New builds the facade: logger, config engine (encrypted at rest), server
@@ -83,9 +89,34 @@ func New(cfg Config) (*Facade, error) {
 		store = config.NewFileStore(filepath.Join(cfg.DataDir, configFileName))
 	}
 
+	// Import any server profiles still embedded in the legacy encrypted blob
+	// (pre-migration builds) into the repository before the settings-only
+	// engine loads. A corrupt blob is left for config.New to recover.
+	legacy, err := config.LoadLegacyServers(store, secrets, logger)
+	if err != nil {
+		logger.Warnf("core", "skipping legacy server migration: %v", err)
+	}
+
 	cfgEngine, err := config.New(store, secrets, logger)
 	if err != nil {
 		return nil, err
+	}
+
+	// Server profiles live in SQLite with credentials externalized to the
+	// SecretStore; the Config Engine only persists settings.
+	serverDB, err := storepkg.Open(filepath.Join(cfg.DataDir, dbFileName))
+	if err != nil {
+		return nil, err
+	}
+	repo := storepkg.NewSQLiteServerRepository(serverDB, secrets)
+	repo.SetRedactor(logger.Redactor())
+
+	for _, p := range legacy {
+		if _, err := repo.Create(p); err != nil {
+			logger.Warnf("core", "legacy server %q not migrated: %v", p.Name, err)
+			continue
+		}
+		logger.Infof("core", "migrated legacy server %q", p.Name)
 	}
 
 	bus := api.NewEventBus()
@@ -93,9 +124,10 @@ func New(cfg Config) (*Facade, error) {
 		cfg:     cfg,
 		logger:  logger,
 		config:  cfgEngine,
-		servers: server.New(cfgEngine, logger),
+		servers: server.New(repo, logger),
 		bus:     bus,
 	}
+	f.closers = append(f.closers, serverDB)
 
 	runner := cfg.Runner
 	if runner == nil {
@@ -126,7 +158,10 @@ func (f *Facade) Close() error {
 	_ = f.vpn.Disconnect()
 	_ = f.tunnel.Stop()
 	if c, ok := f.cfg.Runner.(interface{ Close() error }); ok {
-		return c.Close()
+		_ = c.Close()
+	}
+	for _, c := range f.closers {
+		_ = c.Close()
 	}
 	return nil
 }
@@ -144,9 +179,11 @@ func (f *Facade) MapError(err error) *api.Error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, config.ErrServerNotFound):
+	case errors.Is(err, storepkg.ErrServerNotFound):
 		return &api.Error{Code: api.ErrCodeNotFound, Message: err.Error()}
 	case errors.Is(err, models.ErrValidation):
+		return &api.Error{Code: api.ErrCodeValidation, Message: err.Error()}
+	case errors.Is(err, server.ErrDisabled):
 		return &api.Error{Code: api.ErrCodeValidation, Message: err.Error()}
 	case errors.Is(err, vpn.ErrBusy), errors.Is(err, tunnel.ErrAlreadyRunning):
 		return &api.Error{Code: api.ErrCodeBusy, Message: err.Error()}
@@ -159,9 +196,17 @@ func (f *Facade) MapError(err error) *api.Error {
 	}
 }
 
-// Resolve implements vpn.ProfileResolver.
+// Resolve implements vpn.ProfileResolver. Connecting to a disabled profile is
+// rejected.
 func (f *Facade) Resolve(serverID string) (*models.ServerProfile, error) {
-	return f.servers.GetServer(serverID)
+	p, err := f.servers.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	if !p.Enabled {
+		return nil, fmt.Errorf("%w: %q", server.ErrDisabled, p.Name)
+	}
+	return p, nil
 }
 
 // --- api.Handler ---
@@ -171,9 +216,29 @@ func (f *Facade) GetVersion() api.GetVersionResponse {
 	return api.GetVersionResponse{Version: Version, EngineVersion: EngineVersion, Platform: f.cfg.Platform}
 }
 
-// ListServers implements api.Handler.
-func (f *Facade) ListServers() api.ServerListResponse {
-	return api.ServerListResponse{Servers: f.servers.ListServers()}
+// ListServers implements api.Handler, applying query filters/sort.
+func (f *Facade) ListServers(req api.ServerListRequest) api.ServerListResponse {
+	q := storepkg.Query{
+		Search:   req.Search,
+		Protocol: req.Protocol,
+		Group:    req.Group,
+		Enabled:  req.Enabled,
+		Favorite: req.Favorite,
+		Sort:     storepkg.SortName, // contract default
+	}
+	switch req.Sort {
+	case api.ServerSortUpdatedAt:
+		q.Sort = storepkg.SortUpdated
+	case api.ServerSortLatency:
+		q.Sort = storepkg.SortLatency
+	case api.ServerSortName:
+		q.Sort = storepkg.SortName
+	}
+	servers, err := f.servers.ListServersQuery(q)
+	if err != nil {
+		f.logger.Errorf("core", "listServers: %v", err)
+	}
+	return api.ServerListResponse{Servers: servers}
 }
 
 // GetServer implements api.Handler.
@@ -206,6 +271,15 @@ func (f *Facade) DeleteServer(id string) error {
 	return f.servers.DeleteServer(id)
 }
 
+// DuplicateServer implements api.Handler, copying a profile under a new id.
+func (f *Facade) DuplicateServer(id string) (api.IDResponse, error) {
+	newID, err := f.servers.Duplicate(id)
+	if err != nil {
+		return api.IDResponse{}, err
+	}
+	return api.IDResponse{ID: newID}, nil
+}
+
 // ImportServers implements api.Handler.
 func (f *Facade) ImportServers(req api.ImportRequest) (api.ImportResponse, error) {
 	added, failed, errs, err := f.servers.ImportServers(req.Source.Data)
@@ -219,13 +293,25 @@ func (f *Facade) ImportServers(req api.ImportRequest) (api.ImportResponse, error
 	return out, nil
 }
 
-// ExportServers implements api.Handler.
+// ExportServers implements api.Handler, honoring the requested format
+// (onnproxy envelope or native share links).
 func (f *Facade) ExportServers(req api.ExportRequest) (api.ExportResponse, error) {
-	blob, err := f.servers.ExportServers(req.IDs)
-	if err != nil {
-		return api.ExportResponse{}, err
+	switch req.Format {
+	case "", api.ExportFormatEnvelope:
+		blob, err := f.servers.ExportServers(req.IDs)
+		if err != nil {
+			return api.ExportResponse{}, err
+		}
+		return api.ExportResponse{Format: server.EnvelopeFormat, Blob: blob}, nil
+	case api.ExportFormatLinks:
+		blob, err := f.servers.ExportLinks(req.IDs)
+		if err != nil {
+			return api.ExportResponse{}, err
+		}
+		return api.ExportResponse{Format: api.ExportFormatLinks, Blob: blob}, nil
+	default:
+		return api.ExportResponse{}, fmt.Errorf("%w: unknown export format %q", models.ErrValidation, req.Format)
 	}
-	return api.ExportResponse{Format: server.EnvelopeFormat, Blob: blob}, nil
 }
 
 // TestServerLatency implements api.Handler and emits a latencyTested event.

@@ -6,23 +6,21 @@ import (
 	"testing"
 	"time"
 
-	"omniproxy/core/config"
 	"omniproxy/core/log"
 	"omniproxy/core/models"
 	"omniproxy/core/secret"
+	"omniproxy/core/store"
 )
 
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
-	engine, err := config.New(
-		config.NewFileStore(filepath.Join(t.TempDir(), "config.bin")),
-		secret.NewInMemory(),
-		log.NewNopLogger(),
-	)
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatalf("config.New: %v", err)
+		t.Fatalf("store.Open: %v", err)
 	}
-	return New(engine, log.NewNopLogger())
+	t.Cleanup(func() { db.Close() })
+	repo := store.NewSQLiteServerRepository(db, secret.NewInMemory())
+	return New(repo, log.NewNopLogger())
 }
 
 func vless(name string) *models.ServerProfile {
@@ -32,6 +30,7 @@ func vless(name string) *models.ServerProfile {
 		Address:  "sv.example.com",
 		Port:     443,
 		UUID:     "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		Enabled:  true,
 	}
 }
 
@@ -182,4 +181,92 @@ func TestLatencyUnavailable(t *testing.T) {
 	if _, err := m.TestLatency(context.Background(), id); err == nil {
 		t.Fatal("expected ErrLatencyUnavailable")
 	}
+}
+
+func TestSetEnabled(t *testing.T) {
+	m := newTestManager(t)
+	id, _ := m.AddServer(vless("Toggle"))
+	if err := m.SetEnabled(id, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.GetServer(id)
+	if got.Enabled {
+		t.Fatal("expected disabled")
+	}
+	if err := m.SetEnabled(id, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = m.GetServer(id)
+	if !got.Enabled {
+		t.Fatal("expected enabled")
+	}
+}
+
+func TestDuplicate(t *testing.T) {
+	m := newTestManager(t)
+	id, _ := m.AddServer(vless("Original"))
+	if err := m.SetFavorite(id, true); err != nil {
+		t.Fatal(err)
+	}
+
+	dupID, err := m.Duplicate(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup, err := m.GetServer(dupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dup.Name != "Original (copy)" {
+		t.Fatalf("dup name = %q", dup.Name)
+	}
+	if dup.ID == id {
+		t.Fatal("duplicate must get a fresh id")
+	}
+	if !dup.Enabled {
+		t.Fatal("duplicate must be enabled")
+	}
+	if dup.Favorite {
+		t.Fatal("duplicate must not inherit favorite")
+	}
+	if dup.Protocol != models.ProtocolVLESS || dup.UUID != vless("").UUID {
+		t.Fatalf("duplicate lost config: %+v", dup)
+	}
+
+	if _, err := m.Duplicate("nope"); err == nil {
+		t.Fatal("duplicating unknown id must fail")
+	}
+}
+
+func TestListServersQuery(t *testing.T) {
+	m := newTestManager(t)
+	a, _ := m.AddServer(vless("Alpha"))
+	_, _ = m.AddServer(vless("Beta"))
+	_ = m.SetEnabled(a, false)
+
+	enabled, err := m.ListServersQuery(store.Query{Enabled: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enabled) != 1 || enabled[0].Name != "Beta" {
+		t.Fatalf("enabled query: %v", namesOf(enabled))
+	}
+
+	search, err := m.ListServersQuery(store.Query{Search: "alp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search) != 1 || search[0].Name != "Alpha" {
+		t.Fatalf("search query: %v", namesOf(search))
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func namesOf(servers []*models.ServerProfile) []string {
+	out := make([]string, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, s.Name)
+	}
+	return out
 }

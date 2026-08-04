@@ -30,8 +30,8 @@ class BridgeApiClient implements ApiClient {
   }
 
   @override
-  Future<List<ServerProfile>> listServers() async {
-    final data = await _call('listServers', {});
+  Future<List<ServerProfile>> listServers({ServerListQuery? query}) async {
+    final data = await _call('listServers', query?.toJson() ?? const {});
     final servers = data['servers'] as List<dynamic>? ?? const [];
     return servers
         .map((s) => ServerProfile.fromJson(s as Map<String, dynamic>))
@@ -62,6 +62,12 @@ class BridgeApiClient implements ApiClient {
   }
 
   @override
+  Future<String> duplicateServer(String id) async {
+    final data = await _call('duplicateServer', {'id': id});
+    return data['id'] as String? ?? '';
+  }
+
+  @override
   Future<ImportResult> importServers(ImportSource source) async {
     final data =
         await _call('importServers', {'source': source.toJson()});
@@ -69,8 +75,12 @@ class BridgeApiClient implements ApiClient {
   }
 
   @override
-  Future<String> exportServers({List<String>? ids}) async {
-    final data = await _call('exportServers', {'ids': ids ?? const []});
+  Future<String> exportServers(
+      {List<String>? ids, String format = 'onnproxy'}) async {
+    final data = await _call('exportServers', {
+      'ids': ids ?? const [],
+      'format': format,
+    });
     return data['blob'] as String? ?? '';
   }
 

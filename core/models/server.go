@@ -74,6 +74,16 @@ type SSHConfig struct {
 	PrivateKey string `json:"privateKey,omitempty"` // PEM; stored via SecretStore, never in logs
 }
 
+// RealityConfig carries the reserved VLESS Reality options. Reality tunneling
+// is not supported by the engine yet (Phase 2); Validate rejects Enabled=true,
+// but the fields are stored so Phase 2 wiring lands without a schema change.
+type RealityConfig struct {
+	Enabled   bool   `json:"enabled"`
+	PublicKey string `json:"publicKey,omitempty"`
+	ShortID   string `json:"shortId,omitempty"`
+	SpiderX   string `json:"spiderX,omitempty"`
+}
+
 // ServerProfile is a single configured server/protocol endpoint (PRD §8).
 // Credential fields (Password, UUID, SSH.PrivateKey) are secrets: the config
 // layer stores them in OS-native secure storage, never plaintext on disk, and
@@ -95,13 +105,21 @@ type ServerProfile struct {
 	Transport     *TransportConfig `json:"transport,omitempty"`
 	GlobalPadding bool             `json:"globalPadding,omitempty"`
 	// AuthenticatedLength is the VMess length-authentication wire option.
-	AuthenticatedLength bool       `json:"authenticatedLength,omitempty"`
-	PacketEncoding      string     `json:"packetEncoding,omitempty"`
-	Favorite            bool       `json:"favorite"`
-	LastLatencyMS       int        `json:"lastLatencyMs"`
-	LastTestedAt        *time.Time `json:"lastTestedAt,omitempty"`
-	CreatedAt           time.Time  `json:"createdAt"`
-	UpdatedAt           time.Time  `json:"updatedAt"`
+	AuthenticatedLength bool   `json:"authenticatedLength,omitempty"`
+	PacketEncoding      string `json:"packetEncoding,omitempty"`
+	// Enabled controls whether the server may be connected to. Disabled
+	// profiles are preserved but excluded from the connect path.
+	Enabled bool `json:"enabled"`
+	// Group is a free-form user-assigned grouping label (e.g. "Work").
+	Group string `json:"group,omitempty"`
+	// Tags are free-form user-assigned labels for search/filtering.
+	Tags          []string       `json:"tags,omitempty"`
+	Reality       *RealityConfig `json:"reality,omitempty"`
+	Favorite      bool           `json:"favorite"`
+	LastLatencyMS int            `json:"lastLatencyMs"`
+	LastTestedAt  *time.Time     `json:"lastTestedAt,omitempty"`
+	CreatedAt     time.Time      `json:"createdAt"`
+	UpdatedAt     time.Time      `json:"updatedAt"`
 }
 
 // Clone returns a deep copy of the profile.
@@ -113,9 +131,16 @@ func (p *ServerProfile) Clone() *ServerProfile {
 	if p.TLS.ALPN != nil {
 		cp.TLS.ALPN = append([]string(nil), p.TLS.ALPN...)
 	}
+	if p.Tags != nil {
+		cp.Tags = append([]string(nil), p.Tags...)
+	}
 	if p.Transport != nil {
 		t := *p.Transport
 		cp.Transport = &t
+	}
+	if p.Reality != nil {
+		r := *p.Reality
+		cp.Reality = &r
 	}
 	if p.LastTestedAt != nil {
 		t := *p.LastTestedAt
@@ -172,6 +197,9 @@ func (p *ServerProfile) Validate() error {
 		default:
 			return field("unsupported transport " + string(p.Transport.Type))
 		}
+	}
+	if p.Reality != nil && p.Reality.Enabled {
+		return field("reality tunneling is reserved for a future release")
 	}
 	return nil
 }

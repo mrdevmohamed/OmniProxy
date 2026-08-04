@@ -43,8 +43,9 @@ OmniProxy/
 ├── core/                        # Go core — platform-independent
 │   ├── go.mod · core.go         # facade wiring components together
 │   ├── models/                  # ServerProfile, VPNSession, AppSettings, LogEntry
-│   ├── config/                  # Config Engine: validate, persist, encrypt-at-rest
-│   ├── server/                  # Server Manager: CRUD, import/export, favorites, latency
+│   ├── config/                  # Config Engine: validate, persist settings, encrypt-at-rest
+│   ├── store/                   # SQLite persistence + schema migrations + server repository
+│   ├── server/                  # Server Manager: CRUD, import/export, favorites, latency, links
 │   ├── tunnel/                  # Tunnel Manager (single-server; chain = Phase 2 TODO)
 │   ├── vpn/                     # VPN Service: state machine, reconnect/backoff, sessions
 │   ├── log/                     # leveled structured logger + credential redaction
@@ -77,9 +78,13 @@ OmniProxy/
 ## 4. Bridge API contract
 
 Defined once in `docs/api-contract.md` and implemented identically over every transport:
-`getVersion` · `listServers` · `addServer` · `updateServer` · `deleteServer` · `importServers` · `exportServers` · `testServerLatency` · `connect({serverId, mode})` · `disconnect` · `getConnectionState` · `getLogs` · `getSettings` / `updateSettings` · `subscribe` / `unsubscribe` (events: `stateChanged`, `logAppended`).
+`getVersion` · `listServers` (query params: search/protocol/group/enabled/favorite/sort) · `getServer` · `addServer` · `updateServer` · `deleteServer` · `duplicateServer` · `importServers` · `exportServers` (onnproxy envelope or native share links) · `testServerLatency` · `connect({serverId, mode})` · `disconnect` · `getConnectionState` · `getLogs` · `getSettings` / `updateSettings` · `subscribe` / `unsubscribe` (events: `stateChanged`, `logAppended`, `latencyTested`).
 
 Bridges are **pure transport only** — no platform business logic (PRD §7.2).
+
+### Server persistence (SQLite + SecretStore)
+
+Server profiles are persisted in a local SQLite database (`omniproxy.db`, schema managed by versioned migrations in `core/store`). Credential values are **never** stored in SQLite rows — they are externalized to OS-native secure storage under per-server keys (`omniproxy.server.<id>.<ref>`) via the same `SecretStore` used for the at-rest encryption key. The repository (`core/store/server_repository.go`) is the seam for any future column-level encryption. The encrypted settings blob (`config/`) holds settings only; on first startup after this change, `config.LoadLegacyServers` imports any server profiles still embedded in a pre-migration blob into the repository. Duplicate/enable/disable/favorite/search/filter/sort/group are managed in the repository; the bridge surfaces them via `listServers` query params, `duplicateServer`, and the `enabled`/`favorite`/`group` fields on `ServerProfile`.
 
 ## 5. Milestones (commit at each)
 

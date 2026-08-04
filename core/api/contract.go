@@ -13,6 +13,7 @@ const (
 	MethodAddServer          = "addServer"
 	MethodUpdateServer       = "updateServer"
 	MethodDeleteServer       = "deleteServer"
+	MethodDuplicateServer    = "duplicateServer"
 	MethodImportServers      = "importServers"
 	MethodExportServers      = "exportServers"
 	MethodTestServerLatency  = "testServerLatency"
@@ -100,15 +101,52 @@ type ImportResponse struct {
 	Errors []ImportError `json:"errors"`
 }
 
-// ExportRequest selects profiles to export (empty = all).
+// ExportRequest selects profiles to export (empty = all) and the output
+// format. Format defaults to ExportFormatEnvelope when empty.
 type ExportRequest struct {
-	IDs []string `json:"ids"`
+	IDs    []string `json:"ids"`
+	Format string   `json:"format"`
 }
+
+// Export formats supported by exportServers.
+const (
+	// ExportFormatEnvelope is the OmniProxy envelope (importServers compatible).
+	ExportFormatEnvelope = "onnproxy"
+	// ExportFormatLinks is newline-separated native share links
+	// (vless://, vmess://, ss://, trojan://, socks5://, http://).
+	ExportFormatLinks = "links"
+)
 
 // ExportResponse is the exportServers response.
 type ExportResponse struct {
 	Format string `json:"format"`
 	Blob   string `json:"blob"`
+}
+
+// ServerSort orders listServers results.
+type ServerSort string
+
+// Supported listServers sort orders. The zero value sorts by name.
+const (
+	ServerSortName      ServerSort = "name"
+	ServerSortUpdatedAt ServerSort = "updatedAt"
+	ServerSortLatency   ServerSort = "latency"
+)
+
+// ServerListRequest is the listServers request. All fields are optional; the
+// zero value returns every server ordered by name.
+type ServerListRequest struct {
+	Search   string     `json:"search"`
+	Protocol string     `json:"protocol"`
+	Group    string     `json:"group"`
+	Enabled  *bool      `json:"enabled"`
+	Favorite *bool      `json:"favorite"`
+	Sort     ServerSort `json:"sort"`
+}
+
+// DuplicateRequest is the duplicateServer request.
+type DuplicateRequest struct {
+	ID string `json:"id"`
 }
 
 // LatencyRequest is the testServerLatency request.

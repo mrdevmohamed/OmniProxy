@@ -6,10 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"omniproxy/core/config"
-	"omniproxy/core/log"
 	"omniproxy/core/models"
-	"omniproxy/core/secret"
 )
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -21,17 +18,6 @@ func vmessLink(t *testing.T, doc map[string]any) string {
 		t.Fatal(err)
 	}
 	return "vmess://" + base64.RawURLEncoding.EncodeToString(raw)
-}
-
-func newManager(t *testing.T) *Manager {
-	t.Helper()
-	dir := t.TempDir()
-	store := config.NewFileStore(dir + "/config.bin")
-	e, err := config.New(store, secret.NewInMemory(), log.NewNopLogger())
-	if err != nil {
-		t.Fatalf("config.New: %v", err)
-	}
-	return New(e, log.NewNopLogger())
 }
 
 func TestParseVMessWebSocket(t *testing.T) {
@@ -315,7 +301,7 @@ func TestParseImportDataMixed(t *testing.T) {
 }
 
 func TestManagerImportLinks(t *testing.T) {
-	m := newManager(t)
+	m := newTestManager(t)
 	blob := "vmess://" + b64(`{"v":"2","ps":"A","add":"a.example.com","port":443,"id":"11111111-2222-3333-4444-555555555555","net":"tcp","tls":""}`) +
 		"\n" + "broken"
 	added, failed, errs, err := m.ImportServers(blob)

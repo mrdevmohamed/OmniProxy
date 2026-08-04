@@ -54,6 +54,15 @@
     "hostKey": "string|null",   // optional pinned host key
     "privateKey": "string|null" // PEM; stored via SecretStore, redacted in logs
   },
+  "enabled": true,              // disabled profiles are preserved but excluded from connect
+  "group": "string|null",       // free-form grouping label (e.g. "Work")
+  "tags": ["string"],           // optional free-form labels for search/filtering
+  "reality": {                  // Phase 2; reserved, rejected on add/update until the engine supports it
+    "enabled": false,
+    "publicKey": "string|null",
+    "shortId": "string|null",
+    "spiderX": "string|null"
+  },
   "favorite": false,
   "lastLatencyMs": 0,           // 0 = untested
   "lastTestedAt": "rfc3339|null",
@@ -65,6 +74,8 @@
 `importServers`/`exportServers` use a single-server envelope `{"format":"onnproxy","version":1,"server":{...ServerProfile...}}` (multi-server = JSON array of envelopes) — the shared, cross-platform interchange format.
 
 `importServers` also accepts share links directly (a single link or multi-line text, one per line): `vmess://` (base64 JSON **and** the SIP002 `uuid@host:port?params#name` form — VMess, with `encryption`→wire security, `global_padding`/`authenticated_length`), `vless://`, `trojan://`, `ss://` (SIP002 and legacy), `socks5://`/`socks://`, and `http://`. Unsupported transports/schemes (grpc, httpupgrade, quic, reality) are rejected per line and reported in `errors`; nothing partially imports. When importing links, each line maps to a `ServerProfile`; credentials are stored via SecretStore as usual.
+
+`exportServers` with `"format":"links"` returns newline-separated native share links (`vless://`, `vmess://`, `ss://`, `trojan://`, `socks5://`, `http://`) that `importServers` accepts verbatim — share-link export/import round-trips. SSH profiles cannot be link-exported (rejected per profile).
 
 ### 2.2 VPNSession
 
@@ -129,13 +140,14 @@ All request fields are required unless marked optional.
 | Method | Request `data` | Response `data` |
 |---|---|---|
 | `getVersion` | `{}` | `{"version":"1.0.0","engineVersion":"v1.13.15","platform":"android\|linux\|windows"}` |
-| `listServers` | `{}` | `{"servers":[ServerProfile]}` |
+| `listServers` | `{"search":"string","protocol":"vless\|vmess\|...","group":"string","enabled":bool\|null,"favorite":bool\|null,"sort":"name\|updatedAt\|latency"}` (all optional) | `{"servers":[ServerProfile]}` |
 | `getServer` | `{"id":"uuid"}` | `ServerProfile` |
 | `addServer` | `{"server":ServerProfile}` (id optional; core assigns) | `{"id":"uuid"}` |
 | `updateServer` | `{"server":ServerProfile}` (id required; full replace) | `ServerProfile` (normalized) |
 | `deleteServer` | `{"id":"uuid"}` | `null` (error if connected to it) |
+| `duplicateServer` | `{"id":"uuid"}` | `{"id":"uuid"}` (new copy id; name gets a `" (copy)"` suffix, not favorite, always enabled) |
 | `importServers` | `{"source":{"kind":"file\|link\|clipboard","data":"string"}}` | `{"added":0,"failed":0,"errors":[{"index":0,"message":"string"}]}` |
-| `exportServers` | `{"ids":[uuid]}` (optional; empty = all) | `{"format":"onnproxy","blob":"string"}` |
+| `exportServers` | `{"ids":[uuid],"format":"onnproxy\|links"}` (both optional; format defaults to `onnproxy`) | `{"format":"onnproxy\|links","blob":"string"}` |
 | `testServerLatency` | `{"id":"uuid"}` | `{"latencyMs":0}` (error envelope on timeout/failure) |
 | `connect` | `{"serverId":"uuid","mode":"vpn\|proxy"}` (mode optional, defaults to settings) | `{"state":"connecting"}` |
 | `disconnect` | `{}` | `{"state":"disconnected"}` |

@@ -46,15 +46,22 @@ final serversProvider =
         ServersNotifier.new);
 
 class ServersNotifier extends AsyncNotifier<List<ServerProfile>> {
+  ServerListQuery _query = const ServerListQuery();
+
   @override
   Future<List<ServerProfile>> build() {
-    return ref.watch(apiClientProvider).listServers();
+    return ref.watch(apiClientProvider).listServers(query: _query);
+  }
+
+  void setQuery(ServerListQuery query) {
+    _query = query;
+    ref.invalidateSelf();
   }
 
   Future<void> _reload() async {
     state = const AsyncLoading();
-    state =
-        await AsyncValue.guard(() => ref.read(apiClientProvider).listServers());
+    state = await AsyncValue.guard(
+        () => ref.read(apiClientProvider).listServers(query: _query));
   }
 
   Future<void> refresh() => _reload();
@@ -74,14 +81,20 @@ class ServersNotifier extends AsyncNotifier<List<ServerProfile>> {
     await _reload();
   }
 
+  Future<String> duplicate(String id) async {
+    final newId = await ref.read(apiClientProvider).duplicateServer(id);
+    await _reload();
+    return newId;
+  }
+
   Future<ImportResult> import(ImportSource source) async {
     final result = await ref.read(apiClientProvider).importServers(source);
     await _reload();
     return result;
   }
 
-  Future<String> export({List<String>? ids}) {
-    return ref.read(apiClientProvider).exportServers(ids: ids);
+  Future<String> export({List<String>? ids, String format = 'onnproxy'}) {
+    return ref.read(apiClientProvider).exportServers(ids: ids, format: format);
   }
 
   Future<int> testLatency(String id) async {
@@ -94,6 +107,12 @@ class ServersNotifier extends AsyncNotifier<List<ServerProfile>> {
     final server = state.value?.firstWhere((s) => s.id == id);
     if (server == null) return;
     await updateServer(server.copyWith(favorite: !server.favorite));
+  }
+
+  Future<void> toggleEnabled(String id) async {
+    final server = state.value?.firstWhere((s) => s.id == id);
+    if (server == null) return;
+    await updateServer(server.copyWith(enabled: !server.enabled));
   }
 }
 

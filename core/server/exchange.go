@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"omniproxy/core/models"
+	"omniproxy/core/store"
 )
 
 // Envelope is the shared, cross-platform interchange format for server
@@ -29,7 +30,10 @@ const (
 // ExportServers serializes the selected profiles (empty ids = all) into the
 // onnproxy format. Returns an error when there is nothing to export.
 func (m *Manager) ExportServers(ids []string) (string, error) {
-	servers := m.engine.ListServers()
+	servers, err := m.repo.List(store.Query{})
+	if err != nil {
+		return "", err
+	}
 	if len(ids) > 0 {
 		want := make(map[string]bool, len(ids))
 		for _, id := range ids {
@@ -80,7 +84,8 @@ func (m *Manager) ImportServers(data string) (added int, failed int, errs []Impo
 		p.CreatedAt, p.UpdatedAt = time.Time{}, time.Time{}
 		p.LastLatencyMS = 0
 		p.LastTestedAt = nil
-		if _, aerr := m.engine.AddServer(p); aerr != nil {
+		p.Enabled = true // imports are "my servers" and must be connectable
+		if _, aerr := m.repo.Create(p); aerr != nil {
 			failed++
 			errs = append(errs, ImportError{Index: i, Message: aerr.Error()})
 			continue

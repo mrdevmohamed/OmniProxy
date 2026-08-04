@@ -1,15 +1,16 @@
 package config
 
 import (
-	"errors"
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"omniproxy/core/log"
 	"omniproxy/core/models"
 	"omniproxy/core/secret"
+	"omniproxy/core/store"
 )
 
 func newTestEngine(t *testing.T, dir string) *Engine {
@@ -23,55 +24,12 @@ func newTestEngine(t *testing.T, dir string) *Engine {
 	return e
 }
 
-func sampleVLESS() *models.ServerProfile {
-	return &models.ServerProfile{
-		Name:     "Frankfurt",
-		Protocol: models.ProtocolVLESS,
-		Address:  "fra1.example.com",
-		Port:     443,
-		UUID:     "11111111-2222-4333-8444-555555555555",
-		TLS:      models.TLSConfig{Enabled: true, ServerName: "fra1.example.com"},
-	}
-}
-
-func TestAddListGetDelete(t *testing.T) {
-	e := newTestEngine(t, t.TempDir())
-	id, err := e.AddServer(sampleVLESS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id == "" {
-		t.Fatal("expected an id")
-	}
-	got, err := e.GetServer(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Name != "Frankfurt" || got.UUID != sampleVLESS().UUID {
-		t.Fatalf("unexpected profile: %+v", got)
-	}
-	servers := e.ListServers()
-	if len(servers) != 1 {
-		t.Fatalf("expected 1 server, got %d", len(servers))
-	}
-	if err := e.DeleteServer(id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.GetServer(id); !errors.Is(err, ErrServerNotFound) {
-		t.Fatalf("expected not found, got %v", err)
-	}
-}
-
-func TestPersistenceRoundTrip(t *testing.T) {
+func TestSettingsPersist(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFileStore(filepath.Join(dir, "config.bin"))
 	secrets := secret.NewInMemory()
 
 	e1, err := New(store, secrets, log.NewNopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := e1.AddServer(sampleVLESS())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,164 +41,15 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := e2.GetServer(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.UUID != sampleVLESS().UUID {
-		t.Fatalf("secret not restored after reload: %+v", got)
-	}
 	if e2.Settings().Theme != models.ThemeDark {
 		t.Fatalf("settings not restored: %+v", e2.Settings())
 	}
 }
 
-func TestSecretsNotPersistedInPlaintext(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileStore(filepath.Join(dir, "config.bin"))
-	secrets := secret.NewInMemory()
-
-	e, err := New(store, secrets, log.NewNopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.AddServer(sampleVLESS()); err != nil {
-		t.Fatal(err)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(dir, "config.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, needle := range []string{sampleVLESS().UUID, sampleVLESS().Name, "fra1.example.com"} {
-		if strings.Contains(string(raw), needle) {
-			t.Fatalf("plaintext leak of %q in store", needle)
-		}
-	}
-	if len(raw) == 0 {
-		t.Fatal("store should not be empty")
-	}
-}
-
-func TestUpdateClearsSupersededSecrets(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileStore(filepath.Join(dir, "config.bin"))
-	secrets := secret.NewInMemory()
-	e, err := New(store, secrets, log.NewNopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := e.AddServer(sampleVLESS())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Change protocol to one with no credential fields; the UUID secret must
-	// be removed from secure storage.
-	upd := &models.ServerProfile{
-		ID:        id,
-		Name:      "Frankfurt",
-		Protocol:  models.ProtocolSOCKS5,
-		Address:   "fra1.example.com",
-		Port:      1080,
-		Username:  "user",
-		Password:  "socks-pass",
-		CreatedAt: sampleVLESS().CreatedAt,
-	}
-	if err := e.UpdateServer(upd); err != nil {
-		t.Fatal(err)
-	}
-	refs := secretRefsFor(mustGet(t, e, id))
-	if len(refs) != 1 || refs[0] != RefPassword {
-		t.Fatalf("expected only password ref after protocol change, got %v", refs)
-	}
-	if s := secrets.Len(); s != 2 { // data key + socks-pass
-		t.Fatalf("expected 2 entries in store, got %d", s)
-	}
-
-	// Now clear the password too (socks5 allows empty creds).
-	upd.Password = ""
-	if err := e.UpdateServer(upd); err != nil {
-		t.Fatal(err)
-	}
-	refs = secretRefsFor(mustGet(t, e, id))
-	if len(refs) != 0 {
-		t.Fatalf("expected no secret refs after clearing password, got %v", refs)
-	}
-	if s := secrets.Len(); s != 1 { // only the data key remains
-		t.Fatalf("expected only data key in store, got %d entries", s)
-	}
-}
-
-func TestDeleteClearsSecrets(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileStore(filepath.Join(dir, "config.bin"))
-	secrets := secret.NewInMemory()
-	e, err := New(store, secrets, log.NewNopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := e.AddServer(sampleVLESS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.DeleteServer(id); err != nil {
-		t.Fatal(err)
-	}
-	if s := secrets.Len(); s != 1 {
-		t.Fatalf("expected only data key left, got %d entries", s)
-	}
-}
-
-func TestCorruptionRecovery(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.bin")
-	store := NewFileStore(path)
-	secrets := secret.NewInMemory()
-
-	e1, err := New(store, secrets, log.NewNopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e1.AddServer(sampleVLESS()); err != nil {
-		t.Fatal(err)
-	}
-
-	// Tamper with the sealed blob.
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw[len(raw)/2] ^= 0xff
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	e2, err := New(store, secrets, log.NewNopLogger())
-	if err != nil {
-		t.Fatalf("tampered store should recover, got %v", err)
-	}
-	if len(e2.ListServers()) != 0 {
-		t.Fatal("expected empty config after recovery")
-	}
-	// The corrupt file must have been backed up, not silently lost.
-	matches, err := filepath.Glob(path + ".corrupt.*")
-	if err != nil || len(matches) == 0 {
-		t.Fatalf("expected corrupt backup file, got %v (%v)", matches, err)
-	}
-}
-
-func TestAddValidation(t *testing.T) {
+func TestDefaultSettings(t *testing.T) {
 	e := newTestEngine(t, t.TempDir())
-	bad := sampleVLESS()
-	bad.Port = 70000
-	if _, err := e.AddServer(bad); !errors.Is(err, models.ErrValidation) {
-		t.Fatalf("expected validation error, got %v", err)
-	}
-	unknown := sampleVLESS()
-	unknown.Protocol = "tunnelbears"
-	if _, err := e.AddServer(unknown); !errors.Is(err, models.ErrValidation) {
-		t.Fatalf("expected validation error for unknown protocol, got %v", err)
+	if e.Settings().Theme != models.ThemeSystem {
+		t.Fatalf("default theme should be system, got %q", e.Settings().Theme)
 	}
 }
 
@@ -288,11 +97,194 @@ func TestUpdateSettingsIPv6ModeNormalize(t *testing.T) {
 	}
 }
 
-func mustGet(t *testing.T, e *Engine, id string) *models.ServerProfile {
-	t.Helper()
-	p, err := e.GetServer(id)
+func TestCorruptionRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.bin")
+	store := NewFileStore(path)
+	secrets := secret.NewInMemory()
+
+	e1, err := New(store, secrets, log.NewNopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p
+	if _, err := e1.UpdateSettings(models.AppSettings{Theme: models.ThemeDark}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with the sealed blob.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)/2] ^= 0xff
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	e2, err := New(store, secrets, log.NewNopLogger())
+	if err != nil {
+		t.Fatalf("tampered store should recover, got %v", err)
+	}
+	if e2.Settings().Theme != models.ThemeSystem {
+		t.Fatal("expected default settings after recovery")
+	}
+	// The corrupt file must have been backed up, not silently lost.
+	matches, err := filepath.Glob(path + ".corrupt.*")
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("expected corrupt backup file, got %v (%v)", matches, err)
+	}
 }
+
+func TestLoadLegacyServers(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFileStore(filepath.Join(dir, "config.bin"))
+	secrets := secret.NewInMemory()
+	key, err := secret.GetOrCreateDataKey(secrets, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id := models.NewID()
+	legacy := legacyDoc{
+		Version:  1,
+		Settings: models.AppSettings{Theme: models.ThemeDark},
+		Servers: []*persistedServer{
+			{
+				ServerProfile: &models.ServerProfile{
+					ID:        id,
+					Name:      "Frankfurt",
+					Protocol:  models.ProtocolVLESS,
+					Address:   "fra1.example.com",
+					Port:      443,
+					CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+				},
+				SecretRefs: []string{store.RefUUID},
+			},
+		},
+	}
+	if err := secrets.Set(store.SecretStoreKey(id, store.RefUUID), sampleUUID); err != nil {
+		t.Fatal(err)
+	}
+
+	plain, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := secret.Seal(key, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Save(sealed); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := log.NewNopLogger()
+	got, err := LoadLegacyServers(fs, secrets, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 legacy profile, got %d", len(got))
+	}
+	if got[0].ID != id || got[0].UUID != sampleUUID || got[0].Name != "Frankfurt" {
+		t.Fatalf("profile not restored: %+v", got[0])
+	}
+	if !got[0].CreatedAt.Equal(legacy.Servers[0].CreatedAt) {
+		t.Fatalf("created timestamp not preserved: %v vs %v", got[0].CreatedAt, legacy.Servers[0].CreatedAt)
+	}
+
+	// The settings-only engine must still load the same blob untouched.
+	e, err := New(fs, secrets, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Settings().Theme != models.ThemeDark {
+		t.Fatalf("settings lost by settings-only load: %+v", e.Settings())
+	}
+}
+
+func TestLoadLegacyServersSkipsMissingSecret(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFileStore(filepath.Join(dir, "config.bin"))
+	secrets := secret.NewInMemory()
+	key, err := secret.GetOrCreateDataKey(secrets, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := legacyDoc{
+		Version: 1,
+		Servers: []*persistedServer{
+			{
+				ServerProfile: &models.ServerProfile{
+					ID:       models.NewID(),
+					Name:     "NoSecret",
+					Protocol: models.ProtocolVLESS,
+					Address:  "example.com",
+					Port:     443,
+				},
+				SecretRefs: []string{store.RefUUID},
+			},
+		},
+	}
+	plain, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := secret.Seal(key, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Save(sealed); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadLegacyServers(fs, secrets, log.NewNopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].UUID != "" {
+		t.Fatalf("expected profile with empty uuid, got %+v", got)
+	}
+}
+
+func TestLoadLegacyServersEmpty(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFileStore(filepath.Join(dir, "config.bin"))
+	secrets := secret.NewInMemory()
+
+	// Fresh store: no blob yet.
+	got, err := LoadLegacyServers(fs, secrets, log.NewNopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no legacy profiles, got %d", len(got))
+	}
+
+	// Blob with no servers section.
+	key, err := secret.GetOrCreateDataKey(secrets, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := json.Marshal(legacyDoc{Version: 1, Settings: models.DefaultAppSettings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := secret.Seal(key, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Save(sealed); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LoadLegacyServers(fs, secrets, log.NewNopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no legacy profiles, got %d", len(got))
+	}
+}
+
+var sampleUUID = "11111111-2222-4333-8444-555555555555"

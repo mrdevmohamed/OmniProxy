@@ -6,11 +6,12 @@ import "omniproxy/core/models"
 // (omniproxy/core) implements it; every transport dispatches into it.
 type Handler interface {
 	GetVersion() GetVersionResponse
-	ListServers() ServerListResponse
+	ListServers(req ServerListRequest) ServerListResponse
 	GetServer(id string) (*models.ServerProfile, error)
 	AddServer(s *models.ServerProfile) (IDResponse, error)
 	UpdateServer(s *models.ServerProfile) (*models.ServerProfile, error)
 	DeleteServer(id string) error
+	DuplicateServer(id string) (IDResponse, error)
 	ImportServers(req ImportRequest) (ImportResponse, error)
 	ExportServers(req ExportRequest) (ExportResponse, error)
 	TestServerLatency(id string) (LatencyResponse, error)

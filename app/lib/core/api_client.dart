@@ -9,7 +9,8 @@ import 'models.dart';
 abstract class ApiClient {
   Future<AppVersion> getVersion();
 
-  Future<List<ServerProfile>> listServers();
+  /// Filters/sorts server-side via the contract query params.
+  Future<List<ServerProfile>> listServers({ServerListQuery query});
 
   Future<ServerProfile> getServer(String id);
 
@@ -20,10 +21,13 @@ abstract class ApiClient {
 
   Future<void> deleteServer(String id);
 
+  /// Copies a profile under a fresh id; returns the new id.
+  Future<String> duplicateServer(String id);
+
   Future<ImportResult> importServers(ImportSource source);
 
-  /// Returns the `.onnproxy` interchange blob.
-  Future<String> exportServers({List<String>? ids});
+  /// Returns the exported blob in [format] (`onnproxy` envelope or `links`).
+  Future<String> exportServers({List<String>? ids, String format = 'onnproxy'});
 
   /// Returns latency in ms; throws [ApiError] on timeout/failure.
   Future<int> testServerLatency(String id);
@@ -46,4 +50,10 @@ abstract class ApiClient {
 
   /// Async events: `stateChanged` · `logAppended` · `latencyTested`.
   Stream<AppEvent> get events;
+}
+
+/// Export blob formats accepted by [ApiClient.exportServers].
+abstract final class ExportFormat {
+  static const envelope = 'onnproxy';
+  static const links = 'links';
 }
