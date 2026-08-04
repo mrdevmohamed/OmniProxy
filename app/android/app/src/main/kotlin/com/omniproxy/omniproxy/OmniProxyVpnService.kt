@@ -45,6 +45,11 @@ class OmniProxyVpnService : VpnService() {
 
         Thread {
             try {
+                // Capture the physical default network + interface list before
+                // establish() turns the VPN into the app's default network; the
+                // tunnel's own sockets dial through this interface
+                // (engine/platform_fd.go).
+                Bridge.syncDefaultInterface()
                 val builder = Builder()
                     .setSession("omniproxy")
                     .setMtu(1500)
@@ -53,6 +58,10 @@ class OmniProxyVpnService : VpnService() {
                     .addAddress("fd00::1", 64)
                     .addRoute("::", 0)
                 val pfd = builder.establish() ?: throw IllegalStateException("VpnService.establish() returned null")
+                // The tunnel's own sockets must not re-enter the TUN (DNS
+                // bootstrap + the proxy server connection would loop). protect()
+                // sends their traffic over the physical network instead.
+                Bridge.setSocketProtector(this)
                 Bridge.setTunFd(pfd.fd)
                 Bridge.executeRequest("connect", requestJson) { response -> result?.success(response) }
             } catch (e: Exception) {

@@ -97,6 +97,20 @@ func TestBuildVPNConfig(t *testing.T) {
 	if built.DNS.Final != "dns-proxy" {
 		t.Fatalf("want final dns server dns-proxy, got %q", built.DNS.Final)
 	}
+	// The local DNS server must use the default (empty-direct) dialer: an
+	// explicit detour to the empty "direct" outbound is rejected by sing-box.
+	for _, srv := range built.DNS.Servers {
+		remote, ok := srv.Options.(*option.RemoteDNSServerOptions)
+		if !ok {
+			t.Fatalf("unexpected dns server options %T", srv.Options)
+		}
+		if srv.Tag == "dns-local" && remote.Detour != "" {
+			t.Fatalf("dns-local should use the default dialer, got detour %q", remote.Detour)
+		}
+		if srv.Tag == "dns-proxy" && remote.Detour != "proxy" {
+			t.Fatalf("dns-proxy should detour to proxy, got %q", remote.Detour)
+		}
+	}
 	if !built.DNS.ReverseMapping {
 		t.Fatal("dns reverse_mapping should be enabled in VPN mode")
 	}
@@ -105,6 +119,9 @@ func TestBuildVPNConfig(t *testing.T) {
 	}
 	if built.Route.Final != "proxy" {
 		t.Fatalf("want route final proxy, got %q", built.Route.Final)
+	}
+	if !built.Route.AutoDetectInterface {
+		t.Fatal("VPN mode should auto-detect the default interface (TUN loop avoidance)")
 	}
 }
 

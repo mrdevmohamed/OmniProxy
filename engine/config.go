@@ -166,6 +166,12 @@ func buildOptions(opts Options) (option.Options, error) {
 		// locally (through the proxy) and resolved domains are cached.
 		o.DNS = buildDNSOptions()
 		o.Route.Rules = append([]option.Rule{dnsHijackRule()}, o.Route.Rules...)
+		// The tunnel's own sockets (dns-local bootstrap, the proxy server
+		// connection) must bypass the TUN or their traffic loops back into the
+		// tunnel. On Android the platform hook protects them (VpnService
+		// protect()); on other platforms sing-box binds direct dials to the
+		// default interface.
+		o.Route.AutoDetectInterface = true
 	}
 	if opts.CacheFilePath != "" {
 		o.Experimental = &option.ExperimentalOptions{
@@ -388,8 +394,8 @@ func tlsContainer(tlsCfg *TLSSettings) option.OutboundTLSOptionsContainer {
 // buildDNSOptions returns the VPN-mode DNS configuration. Client queries use
 // the default (dns-proxy) server so lookups travel through the tunnel; queries
 // issued while dialing an outbound (e.g. resolving the proxy server's domain)
-// use dns-local over direct to avoid a resolution loop. reverse_mapping lets
-// the router answer PTR lookups for tunneled addresses.
+// use dns-local (empty-direct default dialer) to avoid a resolution loop.
+// reverse_mapping lets the router answer PTR lookups for tunneled addresses.
 func buildDNSOptions() *option.DNSOptions {
 	return &option.DNSOptions{
 		RawDNSOptions: option.RawDNSOptions{
@@ -407,12 +413,13 @@ func buildDNSOptions() *option.DNSOptions {
 					},
 				},
 				{
+					// No detour: DNS dialers default to an empty-direct dialer
+					// (sing-box v1.12+ semantics), so this resolves over the
+					// real network without a detour loop. An explicit detour to
+					// the empty "direct" outbound is rejected by sing-box.
 					Type: C.DNSTypeUDP,
 					Tag:  dnsServerLocalTag,
 					Options: &option.RemoteDNSServerOptions{
-						RawLocalDNSServerOptions: option.RawLocalDNSServerOptions{
-							DialerOptions: option.DialerOptions{Detour: "direct"},
-						},
 						DNSServerAddressOptions: option.DNSServerAddressOptions{
 							Server: dnsLocalAddress,
 						},

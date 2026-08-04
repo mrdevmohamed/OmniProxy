@@ -19,10 +19,16 @@ package mobile
 
 import (
 	"encoding/json"
+	"errors"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing/common/control"
 	"omniproxy/core"
 	"omniproxy/core/api"
 	"omniproxy/core/internal/ring"
@@ -125,6 +131,105 @@ func Request(method, requestJSON string) string {
 		return `{"ok":false,"error":{"code":"internal","message":"core not initialized"}}`
 	}
 	return string(facade.Dispatch(method, []byte(requestJSON)))
+}
+
+// SocketProtector is implemented by the Kotlin host. It protects a socket fd
+// from being routed into the VpnService TUN, keeping the tunnel's own traffic
+// (DNS bootstrap, the proxy server connection) on the physical network.
+type SocketProtector interface {
+	Protect(fd int32) bool
+}
+
+// SetSocketProtector registers the VpnService protect callback. Must be set
+// before a VPN-mode connect (the VpnService holds the instance). Passing nil
+// clears it.
+func SetSocketProtector(p SocketProtector) {
+	mu.Lock()
+	defer mu.Unlock()
+	if tunPlat == nil {
+		return
+	}
+	if p != nil {
+		tunPlat.SetProtectFunc(func(fd int) error {
+			if p.Protect(int32(fd)) {
+				return nil
+			}
+			return errors.New("mobile: VpnService.protect rejected fd")
+		})
+	} else {
+		tunPlat.SetProtectFunc(nil)
+	}
+}
+
+// SetDefaultInterface records the physical default network interface reported
+// by the Android ConnectivityManager (Bridge's DefaultNetworkMonitor). The
+// VpnService routes 0.0.0.0/0 into the TUN, so sing-box cannot watch the real
+// default network through netlink; the Kotlin host feeds it here (mirrors
+// libbox.platformDefaultInterfaceMonitor.UpdateDefaultInterface). An empty name
+// and index -1 clear the default. Must be called before a VPN-mode connect.
+func SetDefaultInterface(interfaceName string, interfaceIndex int32) {
+	mu.Lock()
+	defer mu.Unlock()
+	if tunPlat == nil {
+		return
+	}
+	tunPlat.UpdateDefaultInterface(interfaceName, int(interfaceIndex))
+}
+
+// pushedInterface is one entry of the JSON array accepted by
+// SetNetworkInterfaces. It mirrors java.net.NetworkInterface: name, index,
+// mtu, up, and the interface's address prefixes as "ip/prefixlen" strings.
+type pushedInterface struct {
+	Name      string   `json:"name"`
+	Index     int      `json:"index"`
+	MTU       int      `json:"mtu"`
+	Up        bool     `json:"up"`
+	Addresses []string `json:"addresses"`
+}
+
+// SetNetworkInterfaces records the physical interface list reported by the
+// Kotlin host (java.net.NetworkInterface enumeration). Go's net.Interfaces()
+// opens a NETLINK_ROUTE socket, which the Android app sandbox denies on some
+// devices, so the host enumerates interfaces through the Java API and feeds
+// them here. sing-box's network manager serves them back to the default dialer
+// (route/network.go UpdateInterfaces -> NetworkInterfaces). Must be called
+// before a VPN-mode connect.
+func SetNetworkInterfaces(interfacesJSON string) {
+	mu.Lock()
+	defer mu.Unlock()
+	if tunPlat == nil {
+		return
+	}
+	var pushed []pushedInterface
+	if interfacesJSON != "" {
+		if err := json.Unmarshal([]byte(interfacesJSON), &pushed); err != nil {
+			return
+		}
+	}
+	interfaces := make([]adapter.NetworkInterface, 0, len(pushed))
+	for _, it := range pushed {
+		flags := net.Flags(0)
+		if it.Up {
+			flags = net.FlagUp | net.FlagRunning
+		}
+		var addresses []netip.Prefix
+		for _, raw := range it.Addresses {
+			if prefix, err := netip.ParsePrefix(raw); err == nil {
+				addresses = append(addresses, prefix)
+			}
+		}
+		interfaces = append(interfaces, adapter.NetworkInterface{
+			Interface: control.Interface{
+				Index:     it.Index,
+				MTU:       it.MTU,
+				Name:      it.Name,
+				Flags:     flags,
+				Addresses: addresses,
+			},
+			Type: C.InterfaceTypeOther,
+		})
+	}
+	tunPlat.SetNetworkInterfaces(interfaces)
 }
 
 // PollEvents returns the buffered bridge events as a JSON array ([] when empty).
