@@ -255,6 +255,39 @@ func TestUpdateSettingsNormalize(t *testing.T) {
 	}
 }
 
+func TestUpdateSettingsIPv6ModeNormalize(t *testing.T) {
+	e := newTestEngine(t, t.TempDir())
+
+	got, err := e.UpdateSettings(models.AppSettings{IPv6Mode: "tunnelvision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IPv6Mode != models.IPv6ModePreferIPv4 {
+		t.Fatalf("invalid ipv6 mode should normalize to prefer_ipv4, got %q", got.IPv6Mode)
+	}
+
+	for _, m := range []models.IPv6Mode{
+		models.IPv6ModeAuto,
+		models.IPv6ModePreferIPv4,
+		models.IPv6ModeDisable,
+		models.IPv6ModeEnable,
+	} {
+		got, err := e.UpdateSettings(models.AppSettings{IPv6Mode: m})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.IPv6Mode != m {
+			t.Fatalf("ipv6 mode %q should round-trip, got %q", m, got.IPv6Mode)
+		}
+	}
+
+	// Defaults: a fresh engine starts with prefer_ipv4.
+	e2 := newTestEngine(t, t.TempDir())
+	if e2.Settings().IPv6Mode != models.IPv6ModePreferIPv4 {
+		t.Fatalf("default ipv6 mode should be prefer_ipv4, got %q", e2.Settings().IPv6Mode)
+	}
+}
+
 func mustGet(t *testing.T, e *Engine, id string) *models.ServerProfile {
 	t.Helper()
 	p, err := e.GetServer(id)

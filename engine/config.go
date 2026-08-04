@@ -108,6 +108,34 @@ type TunOptions struct {
 	StrictRoute   bool           // default false
 }
 
+// IPv6Mode selects how IPv6 is handled on the tunnel. Modes map onto the
+// DNS domain strategy and, for Disable, an IPv6 block rule (see
+// buildDNSOptions / blockIPv6Rule). The TUN always keeps its IPv6 address and
+// routes so IPv6 can never leak onto the physical interface.
+type IPv6Mode string
+
+const (
+	// IPv6ModeAuto leaves sing-box's default DNS strategy (as-is).
+	IPv6ModeAuto IPv6Mode = "auto"
+	// IPv6ModePreferIPv4 prefers A over AAAA answers while keeping IPv6 usable.
+	IPv6ModePreferIPv4 IPv6Mode = "prefer_ipv4"
+	// IPv6ModeDisable rejects AAAA queries (empty NOERROR) and blocks any IPv6
+	// packet that still reaches the router.
+	IPv6ModeDisable IPv6Mode = "disable_ipv6"
+	// IPv6ModeEnable prefers AAAA answers.
+	IPv6ModeEnable IPv6Mode = "enable_ipv6"
+)
+
+// Valid reports whether m is a known IPv6 mode.
+func (m IPv6Mode) Valid() bool {
+	switch m {
+	case IPv6ModeAuto, IPv6ModePreferIPv4, IPv6ModeDisable, IPv6ModeEnable:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	defaultProxyListen = "127.0.0.1"
 	defaultProxyPort   = uint16(1080)
@@ -131,12 +159,18 @@ type Options struct {
 	Outbound Outbound
 	Proxy    ProxyOptions
 	Tun      TunOptions
+	// IPv6Mode selects IPv6 handling (see IPv6Mode). Empty defaults to
+	// PreferIPv4.
+	IPv6Mode IPv6Mode
 	// CacheFilePath, when non-empty, points the sing-box cache DB to a real
 	// directory (default is "cache.db" in the working directory).
 	CacheFilePath string
 }
 
 func buildOptions(opts Options) (option.Options, error) {
+	if opts.IPv6Mode == "" || !opts.IPv6Mode.Valid() {
+		opts.IPv6Mode = IPv6ModePreferIPv4
+	}
 	if err := opts.validate(); err != nil {
 		return option.Options{}, err
 	}
@@ -164,8 +198,16 @@ func buildOptions(opts Options) (option.Options, error) {
 		// are answered by whatever resolver the server forwards them to. Add a
 		// DNS module and hijack DNS at the router so queries are answered
 		// locally (through the proxy) and resolved domains are cached.
-		o.DNS = buildDNSOptions()
-		o.Route.Rules = append([]option.Rule{dnsHijackRule()}, o.Route.Rules...)
+		o.DNS = buildDNSOptions(dnsStrategy(opts.IPv6Mode))
+		rules := []option.Rule{dnsHijackRule()}
+		if opts.IPv6Mode == IPv6ModeDisable {
+			// Drop IPv6 at the router. The TUN still routes ::/0 (no leak onto
+			// the physical interface), but any IPv6 packet that reaches the
+			// tunnel is refused here and logged by the block outbound.
+			rules = append(rules, blockIPv6Rule())
+			o.Outbounds = append(o.Outbounds, blockOutbound())
+		}
+		o.Route.Rules = append(rules, o.Route.Rules...)
 		// The tunnel's own sockets (dns-local bootstrap, the proxy server
 		// connection) must bypass the TUN or their traffic loops back into the
 		// tunnel. On Android the platform hook protects them (VpnService
@@ -396,7 +438,8 @@ func tlsContainer(tlsCfg *TLSSettings) option.OutboundTLSOptionsContainer {
 // issued while dialing an outbound (e.g. resolving the proxy server's domain)
 // use dns-local (empty-direct default dialer) to avoid a resolution loop.
 // reverse_mapping lets the router answer PTR lookups for tunneled addresses.
-func buildDNSOptions() *option.DNSOptions {
+// strategy maps the IPv6Mode onto the domain strategy (see dnsStrategy).
+func buildDNSOptions(strategy option.DomainStrategy) *option.DNSOptions {
 	return &option.DNSOptions{
 		RawDNSOptions: option.RawDNSOptions{
 			Servers: []option.DNSServerOptions{
@@ -445,7 +488,50 @@ func buildDNSOptions() *option.DNSOptions {
 			Final:          dnsServerProxyTag,
 			ReverseMapping: true,
 			DNSClientOptions: option.DNSClientOptions{
+				Strategy:         strategy,
 				IndependentCache: true,
+			},
+		},
+	}
+}
+
+// dnsStrategy maps an IPv6Mode onto the DNS domain strategy. AAAA queries are
+// rejected outright only in Disable mode (strategy ipv4_only returns an empty
+// NOERROR answer, so clients never learn IPv6 addresses); the other modes only
+// change the preference ordering of A/AAAA answers.
+func dnsStrategy(m IPv6Mode) option.DomainStrategy {
+	switch m {
+	case IPv6ModePreferIPv4:
+		return option.DomainStrategy(C.DomainStrategyPreferIPv4)
+	case IPv6ModeDisable:
+		return option.DomainStrategy(C.DomainStrategyIPv4Only)
+	case IPv6ModeEnable:
+		return option.DomainStrategy(C.DomainStrategyPreferIPv6)
+	default:
+		return option.DomainStrategy(C.DomainStrategyAsIS)
+	}
+}
+
+// blockOutbound drops routed connections and logs each dropped destination
+// (used by blockIPv6Rule for IPv6 leak detection in Disable mode).
+func blockOutbound() option.Outbound {
+	return option.Outbound{Type: C.TypeBlock, Tag: "block", Options: &option.StubOptions{}}
+}
+
+// blockIPv6Rule drops IPv6 traffic at the router. Used in Disable IPv6 mode:
+// the TUN still captures ::/0 (so no traffic leaks onto the physical
+// interface), but every IPv6 packet is refused here and logged by the block
+// outbound — an explicit v6 dial is a leak attempt and must not hang or escape.
+func blockIPv6Rule() option.Rule {
+	return option.Rule{
+		Type: C.RuleTypeDefault,
+		DefaultOptions: option.DefaultRule{
+			RawDefaultRule: option.RawDefaultRule{
+				IPVersion: 6,
+			},
+			RuleAction: option.RuleAction{
+				Action:       C.RuleActionTypeRoute,
+				RouteOptions: option.RouteActionOptions{Outbound: "block"},
 			},
 		},
 	}

@@ -46,6 +46,35 @@ func (l LogLevel) Rank() int {
 	}
 }
 
+// IPv6Mode selects how IPv6 is handled on the tunnel (PRD §3.1; see
+// docs/platform-notes.md §IPv6). The default is PreferIPv4: IPv6 stays fully
+// captured by the TUN (no leak), but DNS prefers A records so v4-only upstream
+// paths (e.g. fast.com measurement servers) are not stalled behind IPv6.
+type IPv6Mode string
+
+const (
+	// IPv6ModeAuto leaves the engine's default behavior (no override).
+	IPv6ModeAuto IPv6Mode = "auto"
+	// IPv6ModePreferIPv4 keeps IPv6 captured but prefers A over AAAA answers.
+	IPv6ModePreferIPv4 IPv6Mode = "prefer_ipv4"
+	// IPv6ModeDisable blocks IPv6 end-to-end: AAAA queries get empty NOERROR
+	// replies and any IPv6 packet reaching the tunnel is dropped.
+	IPv6ModeDisable IPv6Mode = "disable_ipv6"
+	// IPv6ModeEnable prefers IPv6 addresses when the upstream path supports
+	// them.
+	IPv6ModeEnable IPv6Mode = "enable_ipv6"
+)
+
+// Valid reports whether m is a known IPv6 mode.
+func (m IPv6Mode) Valid() bool {
+	switch m {
+	case IPv6ModeAuto, IPv6ModePreferIPv4, IPv6ModeDisable, IPv6ModeEnable:
+		return true
+	default:
+		return false
+	}
+}
+
 // AppSettings holds user-level and app-level preferences (PRD §8).
 // Behavior fields (AutoConnect, StartWithSystem) are persisted in the MVP and
 // honored in later phases; AdvancedModeEnabled is always false until Phase 2.
@@ -57,6 +86,7 @@ type AppSettings struct {
 	AdvancedModeEnabled  bool           `json:"advancedModeEnabled"`
 	NotificationsEnabled bool           `json:"notificationsEnabled"`
 	LogLevel             LogLevel       `json:"logLevel"`
+	IPv6Mode             IPv6Mode       `json:"ipv6Mode"`
 }
 
 // DefaultAppSettings returns the out-of-the-box settings.
@@ -66,6 +96,7 @@ func DefaultAppSettings() AppSettings {
 		ConnectionMode:       ModeVPN,
 		NotificationsEnabled: true,
 		LogLevel:             LevelInfo,
+		IPv6Mode:             IPv6ModePreferIPv4,
 	}
 }
 
@@ -81,5 +112,8 @@ func (s *AppSettings) Normalize() {
 	}
 	if !s.LogLevel.Valid() {
 		s.LogLevel = LevelInfo
+	}
+	if !s.IPv6Mode.Valid() {
+		s.IPv6Mode = IPv6ModePreferIPv4
 	}
 }

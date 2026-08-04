@@ -52,7 +52,7 @@ func testProfile() *models.ServerProfile {
 func TestBuildEngineOptionsModes(t *testing.T) {
 	p := testProfile()
 
-	vpn := BuildEngineOptions(p, models.ModeVPN, engine.LevelInfo, "")
+	vpn := BuildEngineOptions(p, models.ModeVPN, models.IPv6ModePreferIPv4, engine.LevelInfo, "")
 	if vpn.Mode != engine.ModeVPN {
 		t.Fatalf("expected vpn mode, got %s", vpn.Mode)
 	}
@@ -66,7 +66,7 @@ func TestBuildEngineOptionsModes(t *testing.T) {
 		t.Fatalf("cache file should be empty, got %q", vpn.CacheFilePath)
 	}
 
-	proxy := BuildEngineOptions(p, models.ModeProxy, engine.LevelDebug, "/tmp/cache.db")
+	proxy := BuildEngineOptions(p, models.ModeProxy, models.IPv6ModeDisable, engine.LevelDebug, "/tmp/cache.db")
 	if proxy.Mode != engine.ModeProxy {
 		t.Fatalf("expected proxy mode, got %s", proxy.Mode)
 	}
@@ -110,7 +110,7 @@ func TestBuildEngineOptionsProtocols(t *testing.T) {
 		if c.mutate != nil {
 			c.mutate(p)
 		}
-		ob := BuildEngineOptions(p, models.ModeProxy, engine.LevelInfo, "").Outbound
+		ob := BuildEngineOptions(p, models.ModeProxy, models.IPv6ModePreferIPv4, engine.LevelInfo, "").Outbound
 		if ob.Protocol != c.want {
 			t.Errorf("%s: want protocol %s, got %s", c.proto, c.want, ob.Protocol)
 		}
@@ -123,9 +123,60 @@ func TestBuildEngineOptionsProtocols(t *testing.T) {
 func TestBuildEngineOptionsTLSDisabled(t *testing.T) {
 	p := testProfile()
 	p.TLS.Enabled = false
-	ob := BuildEngineOptions(p, models.ModeProxy, engine.LevelInfo, "").Outbound
+	ob := BuildEngineOptions(p, models.ModeProxy, models.IPv6ModePreferIPv4, engine.LevelInfo, "").Outbound
 	if ob.TLS != nil {
 		t.Fatalf("tls should be nil when disabled, got %+v", ob.TLS)
+	}
+}
+
+func TestBuildEngineOptionsIPv6Mode(t *testing.T) {
+	p := testProfile()
+	cases := []struct {
+		in   models.IPv6Mode
+		want engine.IPv6Mode
+	}{
+		{models.IPv6ModeAuto, engine.IPv6ModeAuto},
+		{models.IPv6ModePreferIPv4, engine.IPv6ModePreferIPv4},
+		{models.IPv6ModeDisable, engine.IPv6ModeDisable},
+		{models.IPv6ModeEnable, engine.IPv6ModeEnable},
+		{"bogus", engine.IPv6ModePreferIPv4},
+		{"", engine.IPv6ModePreferIPv4},
+	}
+	for _, c := range cases {
+		opts := BuildEngineOptions(p, models.ModeVPN, c.in, engine.LevelInfo, "")
+		if opts.IPv6Mode != c.want {
+			t.Errorf("ipv6 mode %q: want %s, got %s", c.in, c.want, opts.IPv6Mode)
+		}
+	}
+}
+
+func TestManagerSetIPv6ModeAppliesToStart(t *testing.T) {
+	runner := &fakeRunner{}
+	m := NewManager(runner, log.NewNopLogger())
+	if err := m.Start(testProfile(), models.ModeVPN); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.starts[0].IPv6Mode; got != engine.IPv6ModePreferIPv4 {
+		t.Fatalf("default ipv6 mode should be prefer_ipv4, got %s", got)
+	}
+	m.Stop()
+
+	m.SetIPv6Mode(models.IPv6ModeDisable)
+	m.SetIPv6Mode("bogus") // invalid values fall back to prefer_ipv4
+	if err := m.Start(testProfile(), models.ModeVPN); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.starts[1].IPv6Mode; got != engine.IPv6ModePreferIPv4 {
+		t.Fatalf("invalid ipv6 mode should fall back to prefer_ipv4, got %s", got)
+	}
+	m.Stop()
+
+	m.SetIPv6Mode(models.IPv6ModeDisable)
+	if err := m.Start(testProfile(), models.ModeVPN); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.starts[2].IPv6Mode; got != engine.IPv6ModeDisable {
+		t.Fatalf("want disable ipv6 mode, got %s", got)
 	}
 }
 

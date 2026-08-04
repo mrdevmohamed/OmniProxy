@@ -125,6 +125,97 @@ func TestBuildVPNConfig(t *testing.T) {
 	}
 }
 
+func TestBuildVPNConfigIPv6Modes(t *testing.T) {
+	cases := []struct {
+		name         string
+		mode         IPv6Mode
+		wantStrategy option.DomainStrategy
+		wantBlock    bool
+	}{
+		{"auto", IPv6ModeAuto, option.DomainStrategy(C.DomainStrategyAsIS), false},
+		{"prefer_ipv4", IPv6ModePreferIPv4, option.DomainStrategy(C.DomainStrategyPreferIPv4), false},
+		{"empty defaults to prefer_ipv4", "", option.DomainStrategy(C.DomainStrategyPreferIPv4), false},
+		{"disable", IPv6ModeDisable, option.DomainStrategy(C.DomainStrategyIPv4Only), true},
+		{"enable", IPv6ModeEnable, option.DomainStrategy(C.DomainStrategyPreferIPv6), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			built, err := buildOptions(Options{
+				Mode:     ModeVPN,
+				LogLevel: LevelInfo,
+				IPv6Mode: c.mode,
+				Outbound: Outbound{
+					Protocol: ProtocolVLESS,
+					Address:  "203.0.113.10",
+					Port:     443,
+					UUID:     "11111111-2222-3333-4444-555555555555",
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := built.DNS.DNSClientOptions.Strategy; got != c.wantStrategy {
+				t.Fatalf("dns strategy: want %d, got %d", c.wantStrategy, got)
+			}
+
+			var hasBlockOutbound bool
+			for _, ob := range built.Outbounds {
+				if ob.Tag == "block" && ob.Type == C.TypeBlock {
+					hasBlockOutbound = true
+				}
+			}
+			if hasBlockOutbound != c.wantBlock {
+				t.Fatalf("block outbound present=%v, want %v", hasBlockOutbound, c.wantBlock)
+			}
+
+			var hasBlockRule bool
+			for _, r := range built.Route.Rules {
+				if r.DefaultOptions.IPVersion == 6 &&
+					r.DefaultOptions.RuleAction.Action == C.RuleActionTypeRoute &&
+					r.DefaultOptions.RuleAction.RouteOptions.Outbound == "block" {
+					hasBlockRule = true
+				}
+			}
+			if hasBlockRule != c.wantBlock {
+				t.Fatalf("ip_version 6 block rule present=%v, want %v", hasBlockRule, c.wantBlock)
+			}
+
+			// The TUN must always keep its IPv6 address: IPv6 is captured into
+			// the tunnel (never leaked onto the physical interface) even when
+			// disabled.
+			tunOpts := built.Inbounds[0].Options.(*option.TunInboundOptions)
+			if len(tunOpts.Address) != 2 {
+				t.Fatalf("tun should keep v4+v6 addresses, got %v", tunOpts.Address)
+			}
+		})
+	}
+}
+
+func TestBuildVPNConfigDisableBlocksIPv6Marshals(t *testing.T) {
+	built, err := buildOptions(Options{
+		Mode:     ModeVPN,
+		LogLevel: LevelInfo,
+		IPv6Mode: IPv6ModeDisable,
+		Outbound: Outbound{
+			Protocol: ProtocolVLESS,
+			Address:  "203.0.113.10",
+			Port:     443,
+			UUID:     "11111111-2222-3333-4444-555555555555",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testContext()
+	data, err := json.MarshalContext(ctx, built)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := json.UnmarshalExtendedContext[option.Options](ctx, data); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+}
+
 func TestBuildVPNConfigMarshalsDNS(t *testing.T) {
 	built, err := buildOptions(Options{
 		Mode:     ModeVPN,

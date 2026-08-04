@@ -21,8 +21,45 @@ Per-platform details for the Flutter ↔ Go bridge, TUN/privileges, and native g
 - **Android specifics to honor (PRD):** auto-reconnect on network change/drop, doze-mode/battery guidance, background execution limits — test across OEM skins.
 - **Emulator:** `run_emu` (alias for `emulator -avd light_emulator`). VpnService TUN works on the emulator.
 
-## Linux
+## IPv6
 
+IPv6 handling is decided at the engine layer, so behavior is identical on every
+platform. `AppSettings.ipv6Mode` (see `docs/api-contract.md` §2.3, default
+`prefer_ipv4`) maps onto the sing-box DNS domain strategy and route rules in
+`engine/config.go`:
+
+| Mode | DNS strategy | Route rules |
+|---|---|---|
+| `auto` | (none — as-is) | — |
+| `prefer_ipv4` | `prefer_ipv4` | — |
+| `disable_ipv6` | `ipv4_only` | `ip_version: 6` → `block` outbound |
+| `enable_ipv6` | `prefer_ipv6` | — |
+
+- **The TUN always keeps its IPv6 address and `::/0` capture** (Android
+  `VpnService.Builder` adds `fd00::1/64` + `::/0`; the engine TUN inbound
+  defaults to `10.0.0.1/24` + `fd00::1/64`). IPv6 can therefore never fall out
+  onto the physical interface, even in `disable_ipv6` — "disabling" IPv6 only
+  stops it being *used*, it is never *leaked*.
+- **Why `prefer_ipv4` is the default:** with the default (as-is) strategy,
+  apps receive AAAA answers and dial IPv6 first; when the upstream path to IPv6
+  destinations is slow or broken (a common cause of stalled `fast.com` speed
+  tests through a v4-only relay), connections hang. `prefer_ipv4` keeps IPv6
+  captured and usable for IPv6-only sites while preferring the working IPv4
+  path.
+- **`disable_ipv6` details:** the `ipv4_only` DNS strategy answers AAAA queries
+  with an empty NOERROR reply (`dns/client.go`), so clients never learn IPv6
+  addresses; any literal IPv6 dial that still reaches the tunnel is refused by
+  the block outbound. `block` is registered in the engine's protocol registry
+  (`engine/registry.go`).
+- **Logging** (all visible in the Logs screen at `info` or higher):
+  - DNS answers are logged per record type by sing-box (`dns/client_log.go`,
+    e.g. `exchanged A 1.2.3.4 …` / `exchanged AAAA …`).
+  - The applied mode is logged by the Tunnel Manager at each start
+    (`started vpn tunnel to <addr>:<port> (ipv6 mode <mode>)`).
+  - IPv6 leak attempts in `disable_ipv6` mode are logged by the block outbound
+    (`blocked connection to <dest>` / `blocked packet connection to <dest>`).
+
+## Linux
 - **TUN privileges (design):** creating a TUN interface **and configuring routing/DNS** (auto-route via netlink, ip rules, systemd-resolved) requires root/CAP_NET_ADMIN in the process that hosts the engine. The core itself runs unprivileged, so a small privileged helper (also Go, same workspace, embeds the same `engine` module) is launched via `pkexec` on demand and **hosts the sing-box tunnel process** for VPN mode. The helper listens on a Unix socket (`$XDG_RUNTIME_DIR/omniproxy/helper.sock`); the core is a JSON-over-socket client that sends `connect`/`disconnect`/`state` and streams events back. This is the same "embedded sing-box, never shelled out" rule — the helper links sing-box as a Go module; it is not the sing-box CLI.
   - An early design considered the helper only *creating* the TUN fd and passing it to the unprivileged core via `SCM_RIGHTS`; this was rejected because sing-box's tun setup (addresses, `auto_route`, DNS) also needs `CAP_NET_ADMIN` in the engine process. Verified against sing-box v1.13.15.
   - Helper scope: authenticate (pkexec), own the engine lifecycle, configure TUN/routing. No tunnel *protocol* logic lives in the helper beyond what the shared `engine` module provides.

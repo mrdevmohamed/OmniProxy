@@ -24,11 +24,12 @@ type Manager struct {
 	mode      models.ConnectionMode
 	logLevel  engine.Level
 	cacheFile string
+	ipv6Mode  models.IPv6Mode
 }
 
 // NewManager returns a Manager driving the given runner.
 func NewManager(runner Runner, logger *log.Logger) *Manager {
-	return &Manager{runner: runner, logger: logger, logLevel: engine.LevelInfo}
+	return &Manager{runner: runner, logger: logger, logLevel: engine.LevelInfo, ipv6Mode: models.IPv6ModePreferIPv4}
 }
 
 // SetLogLevel sets the engine log level for subsequent runs.
@@ -45,6 +46,16 @@ func (m *Manager) SetCacheFilePath(path string) {
 	m.cacheFile = path
 }
 
+// SetIPv6Mode sets the IPv6 handling mode for subsequent runs.
+func (m *Manager) SetIPv6Mode(mode models.IPv6Mode) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !mode.Valid() {
+		mode = models.IPv6ModePreferIPv4
+	}
+	m.ipv6Mode = mode
+}
+
 // Start begins the tunnel for profile, failing with ErrAlreadyRunning when a
 // tunnel is already active. The profile is cloned; the caller's copy is never
 // retained or mutated.
@@ -55,14 +66,14 @@ func (m *Manager) Start(p *models.ServerProfile, mode models.ConnectionMode) err
 		return ErrAlreadyRunning
 	}
 	cp := p.Clone()
-	opts := BuildEngineOptions(cp, mode, m.logLevel, m.cacheFile)
+	opts := BuildEngineOptions(cp, mode, m.ipv6Mode, m.logLevel, m.cacheFile)
 	if err := m.runner.Start(opts); err != nil {
 		m.logger.Errorf("tunnel", "start failed: %v", err)
 		return err
 	}
 	m.profile = cp
 	m.mode = mode
-	m.logger.Infof("tunnel", "started %s tunnel to %s:%d", mode, cp.Address, cp.Port)
+	m.logger.Infof("tunnel", "started %s tunnel to %s:%d (ipv6 mode %s)", mode, cp.Address, cp.Port, m.ipv6Mode)
 	return nil
 }
 

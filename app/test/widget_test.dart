@@ -116,6 +116,37 @@ void main() {
         ConnectionMode.proxy);
   });
 
+  testWidgets('settings tab changes IPv6 mode', (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('IPv6'), findsOneWidget);
+    expect(find.text('Prefer IPv4 (default)'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('Prefer IPv4 (default)'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Prefer IPv4 (default)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Disable IPv6'));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(SettingsScreen)));
+    expect(container.read(settingsProvider).ipv6Mode, IPv6Mode.disableIpv6);
+  });
+
   testWidgets('logs tab streams core log entries', (tester) async {
     final client = MockApiClient(connectDelay: const Duration(milliseconds: 100));
     await tester.pumpWidget(buildApp(client: client));

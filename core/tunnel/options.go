@@ -11,12 +11,14 @@ import (
 
 // BuildEngineOptions maps a validated server profile and connection mode onto
 // engine options. logLevel maps the app log level onto the engine; cacheFile,
-// when non-empty, points the engine cache DB at a real path.
-func BuildEngineOptions(p *models.ServerProfile, mode models.ConnectionMode, logLevel engine.Level, cacheFile string) engine.Options {
+// when non-empty, points the engine cache DB at a real path. ipv6Mode maps the
+// app's IPv6 handling setting onto the engine (empty -> engine default).
+func BuildEngineOptions(p *models.ServerProfile, mode models.ConnectionMode, ipv6Mode models.IPv6Mode, logLevel engine.Level, cacheFile string) engine.Options {
 	opts := engine.Options{
 		LogLevel:      logLevel,
 		CacheFilePath: cacheFile,
 		Outbound:      buildOutbound(p),
+		IPv6Mode:      ipv6ModeFor(ipv6Mode),
 	}
 	switch mode {
 	case models.ModeProxy:
@@ -25,6 +27,19 @@ func BuildEngineOptions(p *models.ServerProfile, mode models.ConnectionMode, log
 		opts.Mode = engine.ModeVPN
 	}
 	return opts
+}
+
+func ipv6ModeFor(m models.IPv6Mode) engine.IPv6Mode {
+	switch m {
+	case models.IPv6ModeAuto:
+		return engine.IPv6ModeAuto
+	case models.IPv6ModeDisable:
+		return engine.IPv6ModeDisable
+	case models.IPv6ModeEnable:
+		return engine.IPv6ModeEnable
+	default:
+		return engine.IPv6ModePreferIPv4
+	}
 }
 
 func buildOutbound(p *models.ServerProfile) engine.Outbound {

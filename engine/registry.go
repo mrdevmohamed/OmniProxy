@@ -14,6 +14,7 @@ import (
 	"github.com/sagernet/sing-box/dns/transport/local"
 	_ "github.com/sagernet/sing-box/experimental/clashapi" // registers the clash server (log observable); no listener without ExternalController
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/http"
 	"github.com/sagernet/sing-box/protocol/mixed"
@@ -44,6 +45,9 @@ func newContext(ctx context.Context) context.Context {
 	outbound.Register[option.SOCKSOutboundOptions](outboundRegistry, C.TypeSOCKS, socks.NewOutbound)
 	outbound.Register[option.HTTPOutboundOptions](outboundRegistry, C.TypeHTTP, http.NewOutbound)
 	outbound.Register[option.SSHOutboundOptions](outboundRegistry, C.TypeSSH, ssh.NewOutbound)
+	// block drops routed traffic and logs each dropped destination; used by the
+	// IPv6 block rule in Disable IPv6 mode (IPv6 leak detection).
+	outbound.Register[option.StubOptions](outboundRegistry, C.TypeBlock, block.New)
 
 	local.RegisterTransport(dnsTransportRegistry)
 	dnsTransport.RegisterUDP(dnsTransportRegistry)

@@ -81,6 +81,25 @@ enum LogLevel {
   }
 }
 
+/// IPv6 handling on the tunnel — `AppSettings.ipv6Mode` (§2.3).
+enum IPv6Mode {
+  auto('auto'),
+  preferIpv4('prefer_ipv4'),
+  disableIpv6('disable_ipv6'),
+  enableIpv6('enable_ipv6');
+
+  const IPv6Mode(this.wire);
+
+  final String wire;
+
+  static IPv6Mode fromWire(String? value) {
+    for (final mode in IPv6Mode.values) {
+      if (mode.wire == value) return mode;
+    }
+    return IPv6Mode.preferIpv4;
+  }
+}
+
 /// Server protocols — `docs/api-contract.md` §2.1.
 enum ServerProtocol {
   vless('vless'),
@@ -451,6 +470,7 @@ class AppSettings {
     this.advancedModeEnabled = false,
     this.notificationsEnabled = true,
     this.logLevel = LogLevel.info,
+    this.ipv6Mode = IPv6Mode.preferIpv4,
   });
 
   final ThemePreference theme;
@@ -460,6 +480,7 @@ class AppSettings {
   final bool advancedModeEnabled;
   final bool notificationsEnabled;
   final LogLevel logLevel;
+  final IPv6Mode ipv6Mode;
 
   AppSettings copyWith({
     ThemePreference? theme,
@@ -469,6 +490,7 @@ class AppSettings {
     bool? advancedModeEnabled,
     bool? notificationsEnabled,
     LogLevel? logLevel,
+    IPv6Mode? ipv6Mode,
   }) =>
       AppSettings(
         theme: theme ?? this.theme,
@@ -478,6 +500,7 @@ class AppSettings {
         advancedModeEnabled: advancedModeEnabled ?? this.advancedModeEnabled,
         notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
         logLevel: logLevel ?? this.logLevel,
+        ipv6Mode: ipv6Mode ?? this.ipv6Mode,
       );
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -488,6 +511,7 @@ class AppSettings {
         advancedModeEnabled: json['advancedModeEnabled'] == true,
         notificationsEnabled: json['notificationsEnabled'] != false,
         logLevel: LogLevel.fromWire(json['logLevel'] as String?),
+        ipv6Mode: IPv6Mode.fromWire(json['ipv6Mode'] as String?),
       );
 
   Map<String, dynamic> toJson() => {
@@ -498,6 +522,7 @@ class AppSettings {
         'advancedModeEnabled': advancedModeEnabled,
         'notificationsEnabled': notificationsEnabled,
         'logLevel': logLevel.wire,
+        'ipv6Mode': ipv6Mode.wire,
       };
 }
 

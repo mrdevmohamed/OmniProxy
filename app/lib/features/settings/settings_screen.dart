@@ -91,6 +91,43 @@ class SettingsScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 16),
               _Section(
+                title: 'Network',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _SettingHeader(
+                      icon: Icons.wifi_tethering,
+                      title: 'IPv6',
+                      subtitle:
+                          'How IPv6 is handled on the tunnel. Prefer IPv4 keeps '
+                          'IPv6 captured but uses IPv4 addresses first — avoids '
+                          'stalled connections on broken IPv6 paths (e.g. speed '
+                          'tests) without blocking IPv6-only sites. Disable '
+                          'blocks all IPv6 traffic.',
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonHideUnderline(
+                      child: DropdownButton<IPv6Mode>(
+                        value: settings.ipv6Mode,
+                        items: [
+                          for (final mode in IPv6Mode.values)
+                            DropdownMenuItem<IPv6Mode>(
+                              value: mode,
+                              child: Text(_ipv6ModeLabel(mode)),
+                            ),
+                        ],
+                        onChanged: (mode) {
+                          if (mode != null) {
+                            notifier.update(settings.copyWith(ipv6Mode: mode));
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _Section(
                 title: 'Diagnostics',
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -175,6 +212,13 @@ String _logLevelLabel(LogLevel level) => switch (level) {
       LogLevel.info => 'Info',
       LogLevel.warn => 'Warn',
       LogLevel.error => 'Error',
+    };
+
+String _ipv6ModeLabel(IPv6Mode mode) => switch (mode) {
+      IPv6Mode.auto => 'Auto',
+      IPv6Mode.preferIpv4 => 'Prefer IPv4 (default)',
+      IPv6Mode.disableIpv6 => 'Disable IPv6',
+      IPv6Mode.enableIpv6 => 'Enable IPv6',
     };
 
 class _Section extends StatelessWidget {

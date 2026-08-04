@@ -286,6 +286,7 @@ func (f *Facade) UpdateSettings(req api.SettingsRequest) (api.SettingsResponse, 
 	}
 	f.logger.SetLevel(s.LogLevel)
 	f.tunnel.SetLogLevel(s.LogLevel)
+	f.tunnel.SetIPv6Mode(s.IPv6Mode)
 	return api.SettingsResponse{Settings: s}, nil
 }
 

@@ -94,9 +94,20 @@
   "startWithSystem": false,      // Windows/Android; stored in MVP
   "advancedModeEnabled": false,  // always false in MVP (Phase 2)
   "notificationsEnabled": true,
-  "logLevel": "trace | debug | info | warn | error"
+  "logLevel": "trace | debug | info | warn | error",
+  "ipv6Mode": "auto | prefer_ipv4 | disable_ipv6 | enable_ipv6"
 }
 ```
+
+`ipv6Mode` controls IPv6 handling on the tunnel (default `prefer_ipv4`; see
+`docs/platform-notes.md` §IPv6 for the mapping onto the sing-box DNS strategy
+and route rules):
+
+- `auto` — no DNS strategy override (sing-box default, as-is).
+- `prefer_ipv4` — prefer A over AAAA answers while keeping IPv6 usable.
+- `disable_ipv6` — AAAA queries get empty NOERROR replies and any IPv6 packet
+  reaching the tunnel is blocked (never leaked onto the physical interface).
+- `enable_ipv6` — prefer AAAA answers.
 
 ### 2.4 LogEntry
 
