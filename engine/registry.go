@@ -21,6 +21,7 @@ import (
 	"github.com/sagernet/sing-box/protocol/shadowsocks"
 	"github.com/sagernet/sing-box/protocol/socks"
 	"github.com/sagernet/sing-box/protocol/ssh"
+	"github.com/sagernet/sing-box/protocol/trojan"
 	"github.com/sagernet/sing-box/protocol/tun"
 	"github.com/sagernet/sing-box/protocol/vless"
 	"github.com/sagernet/sing-box/protocol/vmess"
@@ -45,6 +46,7 @@ func newContext(ctx context.Context) context.Context {
 	outbound.Register[option.SOCKSOutboundOptions](outboundRegistry, C.TypeSOCKS, socks.NewOutbound)
 	outbound.Register[option.HTTPOutboundOptions](outboundRegistry, C.TypeHTTP, http.NewOutbound)
 	outbound.Register[option.SSHOutboundOptions](outboundRegistry, C.TypeSSH, ssh.NewOutbound)
+	outbound.Register[option.TrojanOutboundOptions](outboundRegistry, C.TypeTrojan, trojan.NewOutbound)
 	// block drops routed traffic and logs each dropped destination; used by the
 	// IPv6 block rule in Disable IPv6 mode (IPv6 leak detection).
 	outbound.Register[option.StubOptions](outboundRegistry, C.TypeBlock, block.New)

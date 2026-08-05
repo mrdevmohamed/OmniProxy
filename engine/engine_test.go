@@ -485,6 +485,37 @@ func TestEngineStartRejectsDoubleRun(t *testing.T) {
 	}
 }
 
+// TestEngineStartTrojan verifies the Trojan outbound is registered in the
+// engine registry (regression: the profile/model and config builder supported
+// trojan, but the outbound was never registered, so a trojan connect failed
+// with "outbound type not found: trojan").
+func TestEngineStartTrojan(t *testing.T) {
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := New(nil)
+	defer eng.Close()
+	if err := eng.Start(Options{
+		Mode:          ModeProxy,
+		LogLevel:      LevelError,
+		CacheFilePath: filepath.Join(t.TempDir(), "cache.db"),
+		Outbound: Outbound{
+			Protocol: ProtocolTrojan,
+			Address:  "127.0.0.1",
+			Port:     9,
+			Password: "trojan-pass",
+			TLS:      &TLSSettings{ServerName: "localhost"},
+		},
+		Proxy: ProxyOptions{Listen: "127.0.0.1", Port: port},
+	}); err != nil {
+		t.Fatalf("start trojan: %v", err)
+	}
+	if !eng.Running() {
+		t.Fatal("engine should be running")
+	}
+}
+
 func freePort() (uint16, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
