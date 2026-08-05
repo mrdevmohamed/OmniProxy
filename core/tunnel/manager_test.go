@@ -37,6 +37,8 @@ func (r *fakeRunner) Stop() error {
 
 func (r *fakeRunner) Running() bool { return r.started }
 
+func (r *fakeRunner) Lost() <-chan struct{} { return nil }
+
 func testProfile() *models.ServerProfile {
 	return &models.ServerProfile{
 		ID:       "srv-1",

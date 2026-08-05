@@ -280,11 +280,12 @@ flowchart TD
 **Why.** Credentials must never appear in logs (PRD), so redaction sits at the source
 boundary — `Logger.Log` redacts before any sink or subscriber sees the message, and the
 engine log adapter routes *every* sing-box message through it. The `< 3`-char carve-out
-keeps common words (a `p` flag, a port) from being mangled. **Known limitation:** the
-*replace-instead-of-accumulate* bug is fixed — registration is now a master union pattern
-(`GO_RUNTIME.md:378-380`, `DEBUGGING.md:118-130`, `TestRedactorIsAdditive`) — but
-*coverage* is incomplete: not every credential-bearing field is registered (Reality keys,
-SSH host key, WS Host/path; `LOW_LEVEL.md:569`).
+keeps common words (a `p` flag, a port) from being mangled. The *replace-instead-of-
+accumulate* bug is fixed — registration is now a master union pattern
+(`GO_RUNTIME.md:378-380`, `DEBUGGING.md:118-130`, `TestRedactorIsAdditive`) — and
+*coverage* is complete: every credential-bearing field is registered (password/UUID/SSH
+private key, SSH host key, Reality public key/shortId/spiderX, WS host/path;
+`server_repository.go:283-295`), verified by `TestRedactorCoversCredentialFields`.
 
 ---
 

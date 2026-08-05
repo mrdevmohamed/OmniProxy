@@ -328,6 +328,62 @@ func TestRedactorRegistration(t *testing.T) {
 	}
 }
 
+// TestRedactorCoversCredentialFields verifies that a full-profile round-trip
+// (Create, then Get from a fresh repo, as after a restart) registers every
+// credential-bearing field with the logger redactor — not just the primary
+// secrets (password/UUID/private key) but the SSH host key, Reality material,
+// and WS host/path that the audit flagged as coverage gaps.
+func TestRedactorCoversCredentialFields(t *testing.T) {
+	db := openTestDB(t)
+	secrets := secret.NewInMemory()
+	lg := log.NewNopLogger()
+
+	prof := sampleVLESS()
+	prof.Transport = &models.TransportConfig{
+		Type: models.TransportWS,
+		Path: "/ws-path-secret",
+		Host: "ws-host-secret",
+	}
+	prof.SSH = models.SSHConfig{HostKey: "ssh-host-key-secret"}
+	prof.Reality = &models.RealityConfig{
+		Enabled:   false, // Validate rejects Enabled; storage/redaction must still work
+		PublicKey: "reality-public-secret",
+		ShortID:   "abc123",
+		SpiderX:   "/spider-x-secret",
+	}
+
+	repo := NewSQLiteServerRepository(db, secrets)
+	repo.SetRedactor(lg.Redactor())
+	id, err := repo.Create(prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a restart: a fresh repo + fresh logger re-registers on Get.
+	lg2 := log.NewNopLogger()
+	repo2 := NewSQLiteServerRepository(db, secrets)
+	repo2.SetRedactor(lg2.Redactor())
+	if _, err := repo2.Get(id); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"hunter2-secret",                       // password
+		"11111111-2222-4333-8444-555555555555", // uuid
+		"/ws-path-secret",                      // transport path
+		"ws-host-secret",                       // transport host
+		"ssh-host-key-secret",                  // ssh host key
+		"reality-public-secret",                // reality public key
+		"abc123",                               // reality short id
+		"/spider-x-secret",                     // reality spiderX
+	}
+	for _, s := range want {
+		if !strings.Contains(lg2.Redactor().Redact("value "+s+" here"), "[REDACTED]") {
+			t.Fatalf("credential-bearing field %q not registered with the redactor", s)
+		}
+	}
+}
+
 func TestSSHRoundTrip(t *testing.T) {
 	repo, _ := newTestRepo(t)
 	id, err := repo.Create(sampleSSH())

@@ -25,8 +25,9 @@ func (r *fakeRunner) Start(engine.Options) error {
 	r.starts++
 	return r.startErr
 }
-func (r *fakeRunner) Stop() error   { return nil }
-func (r *fakeRunner) Running() bool { return false }
+func (r *fakeRunner) Stop() error           { return nil }
+func (r *fakeRunner) Running() bool         { return false }
+func (r *fakeRunner) Lost() <-chan struct{} { return nil }
 
 func newTestFacade(t *testing.T, runner *fakeRunner) *Facade {
 	t.Helper()

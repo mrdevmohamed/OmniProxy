@@ -131,6 +131,22 @@ func (r *HelperRunner) Running() bool {
 	return r.client != nil && r.client.running
 }
 
+// Lost implements Runner: the current helper connection's loss signal. When
+// the helper dies (or the keepalive drops a wedged one), readLoop exits and
+// closes this channel. In proxy mode (in-process) it returns nil — that run
+// cannot be lost asynchronously.
+func (r *HelperRunner) Lost() <-chan struct{} {
+	if r.inProc.Running() {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.client == nil {
+		return nil
+	}
+	return r.client.lost
+}
+
 // Close sends quit to the helper and reaps the process. Idempotent.
 func (r *HelperRunner) Close() error {
 	r.mu.Lock()
@@ -219,11 +235,21 @@ type helperClient struct {
 	enc    *json.Encoder
 	logger *log.Logger
 
-	mu         sync.Mutex
-	seqCounter uint64
-	pending    map[uint64]chan ServerMessage
-	closed     bool
-	running    bool
+	// Pacing captured once at dial time from the package vars, so a ping loop
+	// never re-reads them (tests shorten the vars; globals are write-once in
+	// production).
+	pingInterval time.Duration
+	pingTimeout  time.Duration
+
+	mu          sync.Mutex
+	seqCounter  uint64
+	pending     map[uint64]chan ServerMessage
+	closed      bool
+	intentional bool // close(true) was requested: teardown, not loss
+	running     bool
+
+	lost     chan struct{}
+	lostOnce sync.Once
 }
 
 func dialHelper(socketPath string, logger *log.Logger) (*helperClient, error) {
@@ -232,10 +258,13 @@ func dialHelper(socketPath string, logger *log.Logger) (*helperClient, error) {
 		return nil, err
 	}
 	c := &helperClient{
-		conn:    conn,
-		enc:     json.NewEncoder(conn),
-		logger:  logger,
-		pending: make(map[uint64]chan ServerMessage),
+		conn:         conn,
+		enc:          json.NewEncoder(conn),
+		logger:       logger,
+		pending:      make(map[uint64]chan ServerMessage),
+		lost:         make(chan struct{}),
+		pingInterval: helperPingInterval,
+		pingTimeout:  helperPingTimeout,
 	}
 	go c.readLoop()
 	go c.startPingLoop()
@@ -279,6 +308,24 @@ func (c *helperClient) readLoop() {
 		}
 	}
 	_ = c.close(false)
+	// The connection closed. If that was not a deliberate teardown (Close with
+	// quit, or an explicit sendQuit), the helper went away under us — signal
+	// loss so the VPN state machine can transition instead of showing
+	// Connected forever.
+	if !c.wasIntentional() {
+		c.notifyLost()
+	}
+}
+
+// notifyLost closes the lost channel exactly once.
+func (c *helperClient) notifyLost() { c.lostOnce.Do(func() { close(c.lost) }) }
+
+// wasIntentional reports whether the connection was torn down deliberately
+// (quit sent) as opposed to lost (EOF from a dead/wedged helper).
+func (c *helperClient) wasIntentional() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.intentional
 }
 
 func (c *helperClient) nextSeq() uint64 {
@@ -339,7 +386,7 @@ func (c *helperClient) connect(opts engine.Options) error {
 // the connection so subsequent operations re-spawn the helper instead of
 // hanging on request timeouts.
 func (c *helperClient) startPingLoop() {
-	t := time.NewTicker(helperPingInterval)
+	t := time.NewTicker(c.pingInterval)
 	defer t.Stop()
 	for range t.C {
 		if !c.alive() {
@@ -360,7 +407,7 @@ func (c *helperClient) ping() error {
 	if err := c.send(ClientMessage{Type: "ping", Seq: seq}); err != nil {
 		return fmt.Errorf("privileged helper: %w", err)
 	}
-	resp, err := c.await(seq, helperPingTimeout)
+	resp, err := c.await(seq, c.pingTimeout)
 	if err != nil {
 		return fmt.Errorf("privileged helper: %w", err)
 	}
@@ -393,6 +440,7 @@ func (c *helperClient) close(sendQuit bool) error {
 		return nil
 	}
 	c.closed = true
+	c.intentional = sendQuit
 	c.running = false
 	pending := c.pending
 	c.pending = nil

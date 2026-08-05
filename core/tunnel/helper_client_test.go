@@ -185,6 +185,70 @@ func TestHelperSocketPath(t *testing.T) {
 	}
 }
 
+func TestHelperClientNotifiesLostOnDeath(t *testing.T) {
+	ln, err := net.Listen("unix", filepath.Join(t.TempDir(), "death.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		// The helper process dies: the server side just goes away.
+		conn.Close()
+	}()
+
+	c, err := dialHelper(ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.close(false)
+
+	select {
+	case <-c.lost:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the lost channel to fire when the helper connection dropped")
+	}
+	if c.wasIntentional() {
+		t.Fatal("a dropped connection should be classified as loss, not intentional teardown")
+	}
+}
+
+func TestHelperClientCloseDoesNotSignalLoss(t *testing.T) {
+	h := startFakeHelper(t, t.TempDir())
+	defer func() {
+		h.ln.Close()
+		<-h.closed
+	}()
+
+	c, err := dialHelper(h.ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	select {
+	case <-c.lost:
+		t.Fatal("lost channel fired before any close")
+	default:
+	}
+
+	// Deliberate teardown (quit) must not be reported as loss.
+	if err := c.close(true); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-c.lost:
+		t.Fatal("deliberate close must not signal loss")
+	default:
+	}
+	if !c.wasIntentional() {
+		t.Fatal("close(true) should be classified as intentional teardown")
+	}
+}
+
 func TestHelperClientSendsKeepalivePing(t *testing.T) {
 	origInterval := helperPingInterval
 	helperPingInterval = 50 * time.Millisecond

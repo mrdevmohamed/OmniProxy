@@ -33,12 +33,16 @@ type fakeTunneler struct {
 	startErr   error
 	startCalls int
 	stopCalls  int
+	lost       chan struct{}
 }
 
 func (t *fakeTunneler) Start(_ *models.ServerProfile, _ models.ConnectionMode) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.startCalls++
+	// Each session gets a fresh loss channel, mirroring a respawned helper
+	// (HelperRunner replaces the channel when a new client is dialed).
+	t.lost = make(chan struct{})
 	if t.startErr != nil {
 		return t.startErr
 	}
@@ -54,6 +58,22 @@ func (t *fakeTunneler) Stop() error {
 	defer t.mu.Unlock()
 	t.stopCalls++
 	return nil
+}
+
+func (t *fakeTunneler) Lost() <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lost
+}
+
+// fireLost closes the current session's loss channel without replacing it, so
+// a run loop that reads Lost() afterwards still sees it.
+func (t *fakeTunneler) fireLost() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.lost != nil {
+		close(t.lost)
+	}
 }
 
 func (t *fakeTunneler) counts() (int, int) {
@@ -297,6 +317,64 @@ func TestDisconnectFromError(t *testing.T) {
 	}
 }
 
+func TestTunnelLostAutoReconnects(t *testing.T) {
+	tun := &fakeTunneler{}
+	svc, _ := newService(t, tun)
+	svc.SetAutoReconnect(true)
+	svc.SetRetryPolicy(testPolicy{delay: time.Millisecond, max: 5})
+
+	if err := svc.Connect("srv-1", models.ModeVPN); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, svc, models.StateConnected)
+
+	tun.fireLost()
+	// The loss must surface as Reconnecting, then the session re-establishes
+	// by starting a new tunnel run (startCalls >= 2).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		starts, _ := tun.counts()
+		if starts >= 2 && svc.State() == models.StateConnected {
+			break
+		}
+		if time.Now().After(deadline) {
+			starts, _ := tun.counts()
+			t.Fatalf("lost tunnel did not reconnect: starts=%d state=%s", starts, svc.State())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	seen := map[models.ConnectionState]bool{}
+	for _, sc := range svc.Session().StatusHistory {
+		seen[sc.State] = true
+	}
+	if !seen[models.StateReconnecting] {
+		t.Fatalf("expected a Reconnecting transition after loss: %+v", svc.Session().StatusHistory)
+	}
+	_ = svc.Disconnect()
+}
+
+func TestTunnelLostExhaustsRetries(t *testing.T) {
+	tun := &fakeTunneler{}
+	svc, _ := newService(t, tun)
+	svc.SetAutoReconnect(false)
+
+	if err := svc.Connect("srv-1", models.ModeVPN); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, svc, models.StateConnected)
+
+	tun.fireLost()
+	waitState(t, svc, models.StateError)
+	if starts, _ := tun.counts(); starts != 1 {
+		t.Fatalf("expected a single start attempt with auto-reconnect off, got %d", starts)
+	}
+	sess := svc.Session()
+	if sess == nil || sess.Error == nil || sess.Error.Code != api.ErrCodeEngine {
+		t.Fatalf("expected engine error on lost session: %+v", sess)
+	}
+}
+
 type blockingTunneler struct {
 	mu         sync.Mutex
 	startedA   chan struct{}
@@ -327,6 +405,8 @@ func (t *blockingTunneler) Stop() error {
 	t.stopCalls++
 	return nil
 }
+
+func (t *blockingTunneler) Lost() <-chan struct{} { return nil }
 
 func (t *blockingTunneler) waitFirstStart(tt *testing.T) {
 	tt.Helper()
@@ -390,6 +470,8 @@ func (t *stickyTunneler) Stop() error {
 	t.up = false
 	return nil
 }
+
+func (t *stickyTunneler) Lost() <-chan struct{} { return nil }
 
 func (t *stickyTunneler) counts() (int, int) {
 	t.mu.Lock()

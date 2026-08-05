@@ -346,9 +346,9 @@ Covered by `TestPkexecInvoker` (`core/tunnel/helperhost/helperhost_internal_test
 
 ### 6.6 Keepalive ping, disconnects, timeouts
 
-The client runs an **active keepalive** in the background. After dialing, it starts a goroutine that sends a `ping` every `helperPingInterval` (15 s) with a `helperPingTimeout` (5 s) per round-trip (`core/tunnel/helper_client.go:36-42,335-378`); the server handles `ping`/`pong` (`helperhost.go:56-57,135-143`). A helper that stops answering (wedged) causes the client to log and drop the connection (`close(false)`), so the next operation re-spawns the helper.
+The client runs an **active keepalive** in the background. After dialing, it starts a goroutine that sends a `ping` every `helperPingInterval` (15 s) with a `helperPingTimeout` (5 s) per round-trip (`core/tunnel/helper_client.go:36-42,335-378`); the server handles `ping`/`pong` (`helperhost.go:56-57,135-143`). A helper that stops answering (wedged) causes the client to log and drop the connection (`close(false)`).
 
-Remaining client-side gap: if the helper *process dies*, the socket closes, `readLoop` exits and calls `close(false)` (`helper_client.go:272`), which fails all pending waiters with `"helper: connection closed"` (`:365-367`). But nothing pushes that to the `vpn.Service` state machine — the UI only learns about it on the *next* command (§10 item 3).
+When the connection drops — wedged or the helper process died — `readLoop` exits and, unless the teardown was deliberate (`close(true)`), fires the per-connection `lost` channel (`helper_client.go:315-321`). `vpn.Service` re-reads `Lost()` after each successful `Start` and selects on it: an unexpected loss transitions to `Reconnecting` and re-runs the tunnel (which respawns the helper), or to `Error` once the retry limit is reached (`core/vpn/service.go:315,331-352`). Pending requests still fail fast with `"helper: connection closed"` (`helper_client.go:272,365-367`).
 
 Timeouts are client-side only: spawn 15 s (dial-retry loop at 200 ms intervals, `helper_client.go:193-203`), connect 30 s, disconnect 5 s (`helper_client.go:31-35`).
 
@@ -453,7 +453,7 @@ There is no `.deb`/`.rpm`/Flatpak packaging as-built — the bundle is a relocat
 
 2. ~~**No active keepalive ping.**~~ **RESOLVED** — the client pings every 15 s (5 s timeout) and drops a helper that stops answering (`core/tunnel/helper_client.go:36-42,335-378`; `TestHelperClientSendsKeepalivePing`, `TestHelperClientDetectsWedgedHelper`; §6.6).
 
-3. **Helper death while connected is not pushed to the UI.** When the helper process dies, the socket closes and pending requests fail (`helper_client.go:272,365-367`), but the `vpn.Service` state machine receives no signal; the UI keeps reporting `connected` until the user acts (or the next `disconnect` times out). Auto-reconnect on helper loss is not implemented on Linux (Android's network-change auto-reconnect is a different mechanism, `docs/platform-notes.md:21`).
+3. ~~**Helper death while connected is not pushed to the UI.**~~ **RESOLVED** — when the helper process dies (or the keepalive drops a wedged one), the client's `readLoop` exit now fires a per-connection `lost` signal that `vpn.Service` selects on: the session drops to `Reconnecting` and auto-reconnects (spawning a fresh helper) with backoff, or lands on `Error` after the retry limit (`core/tunnel/helper_client.go:315-321` `notifyLost`; `core/vpn/service.go` `Lost()` on `Runner`/`Tunneler`, `service.go:315,331-352`). Covered by `TestHelperClientNotifiesLostOnDeath`, `TestTunnelLostAutoReconnects`, `TestTunnelLostExhaustsRetries`. (Android's network-change auto-reconnect is a separate mechanism, `docs/platform-notes.md:21`.)
 
 4. **systemd-resolved / NetworkManager integration is Phase 2** (`docs/platform-notes.md:71`). Using sing-box's own DNS while NetworkManager/systemd-resolved also manages `/etc/resolv.conf` can produce conflicting DNS behavior; deliberately deferred.
 

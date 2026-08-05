@@ -377,7 +377,7 @@ Every `omniproxy_request`/`omniproxy_poll_events` result must be freed via `omni
 
 ### 9.8 Redactor `Add` accumulates (fixed)
 
-`Redactor.Add` is **additive**: each call folds its secrets into a master map and recompiles a single case-insensitive union regex (`core/log/redactor.go:25-70`, `compile` at `:60-70`). Because `SQLiteServerRepository.registerRedact` re-adds each profile's credentials on every `Get`/`List` (`core/store/server_repository.go:283-287`), re-registration is harmless — the union of all registered secrets stays masked. Covered by `TestRedactorIsAdditive`. *(Historically `Add` replaced the compiled pattern with only that call's secrets; fixed in the hardening pass. Remaining gap is *coverage*, not semantics: not every credential-bearing field is registered — `docs/LOW_LEVEL.md:569`.)*
+`Redactor.Add` is **additive**: each call folds its secrets into a master map and recompiles a single case-insensitive union regex (`core/log/redactor.go:25-70`, `compile` at `:60-70`). Because `SQLiteServerRepository.registerRedact` re-adds each profile's credentials on every `Get`/`List` (`core/store/server_repository.go:283-295`), re-registration is harmless — the union of all registered secrets stays masked. Covered by `TestRedactorIsAdditive`. *(Historically `Add` replaced the compiled pattern with only that call's secrets; fixed in the hardening pass. Coverage is now also complete: `registerRedact` registers every credential-bearing field — password/UUID/SSH private key plus SSH host key, Reality public key/shortId/spiderX, WS host/path — verified by `TestRedactorCoversCredentialFields` (`server_repository_test.go`), a full-profile round-trip through a fresh repo+logger.)*
 
 ### 9.9 `redactValue` mutates caller context in place
 

@@ -31,7 +31,15 @@ type ProfileResolver interface {
 type Tunneler interface {
 	Start(p *models.ServerProfile, mode models.ConnectionMode) error
 	Stop() error
+	// Lost returns a channel that closes when the active tunnel run dies
+	// unexpectedly (e.g. the privileged helper process exits while connected).
+	// May be nil (never fires). Re-read after each successful Start.
+	Lost() <-chan struct{}
 }
+
+// errTunnelLost is the synthesized error for an unexpected loss of the tunnel
+// run (helper death), surfaced on the session when retries are exhausted.
+var errTunnelLost = errors.New("tunnel: connection lost")
 
 // RetryPolicy computes reconnect backoff. MaxAttempts <= 0 means unlimited.
 type RetryPolicy interface {
@@ -301,6 +309,10 @@ func (s *Service) runLoop(rs *runState, p *models.ServerProfile, mode models.Con
 			continue
 		}
 
+		// Grab the current loss channel only once the run is up: a channel
+		// observed before the tunnel started may belong to an earlier (already
+		// closed) connection, which would retry in a hot loop.
+		lost := s.tunnel.Lost()
 		select {
 		case cmd := <-rs.cmds:
 			switch cmd {
@@ -316,6 +328,27 @@ func (s *Service) runLoop(rs *runState, p *models.ServerProfile, mode models.Con
 		case <-rs.ctx.Done():
 			s.teardown(rs, models.StateDisconnected, nil)
 			return
+		case <-lost:
+			// The tunnel died under us (e.g. the privileged helper process
+			// exited, or the keepalive dropped a wedged one). Mirror the
+			// failed-start path: stop the half-dead run, then retry with
+			// backoff, or surface an Error once the retry limit is reached.
+			if !s.isActive(rs) {
+				return
+			}
+			s.stopIfActive(rs)
+			s.logger.Warnf("vpn", "tunnel lost: %v", errTunnelLost)
+			if !s.shouldRetry(attempt) {
+				s.transitionError(rs, errTunnelLost)
+				return
+			}
+			delay := s.backoff(attempt)
+			attempt++
+			s.transition(rs, models.StateReconnecting, errTunnelLost)
+			if !s.wait(rs, delay) {
+				return
+			}
+			continue
 		}
 	}
 }

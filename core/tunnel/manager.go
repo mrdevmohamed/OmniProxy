@@ -111,3 +111,12 @@ func (m *Manager) Mode() models.ConnectionMode {
 	defer m.mu.Unlock()
 	return m.mode
 }
+
+// Lost returns the runner's unexpected-loss channel (nil when the current run
+// cannot be lost asynchronously). Callers re-read it after each successful
+// Start, since the channel is replaced when a new helper is spawned.
+func (m *Manager) Lost() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runner.Lost()
+}

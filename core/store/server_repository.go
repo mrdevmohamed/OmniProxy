@@ -280,10 +280,24 @@ func (r *SQLiteServerRepository) restoreSecrets(row *serverRow) error {
 	return nil
 }
 
+// registerRedact masks every credential-bearing field of a profile before any
+// log sink sees it. Password/UUID/SSH.PrivateKey are the true secrets; the
+// remaining fields (SSH host key, Reality key material, WS host/path) are
+// public config but are still registered as defense-in-depth so a leaked value
+// can never be mistaken for (or repurposed as) a token. The redactor is
+// additive, so re-registration on every Get/List is harmless.
 func (r *SQLiteServerRepository) registerRedact(p *models.ServerProfile) {
-	if r.redact != nil {
-		r.redact(p.Password, p.UUID, p.SSH.PrivateKey)
+	if r.redact == nil {
+		return
 	}
+	secrets := []string{p.Password, p.UUID, p.SSH.PrivateKey, p.SSH.HostKey}
+	if p.Reality != nil {
+		secrets = append(secrets, p.Reality.PublicKey, p.Reality.ShortID, p.Reality.SpiderX)
+	}
+	if p.Transport != nil {
+		secrets = append(secrets, p.Transport.Host, p.Transport.Path)
+	}
+	r.redact(secrets...)
 }
 
 // SecretRefsFor returns the credential refs a profile needs stored. A ref is

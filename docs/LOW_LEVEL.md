@@ -293,7 +293,7 @@ reject a second tunnel while a start is still in flight (helperhost.go:90-115).
   uid differs via `SO_PEERCRED` (`GetsockoptUcred`) (`helperhost.go:26-52`).
   Direct spawns (tests/dev, no `PKEXEC_UID`) keep ownership as-is, so the
   default path is unchanged. Covered by `TestPkexecInvoker`; the root path
-  still needs verification on a real pkexec run (LINUX.md:448).
+  still needs verification on a real pkexec run (LINUX.md:452).
 - Residual (unchanged): **same-uid** processes can connect — Unix socket auth
   cannot distinguish same-user processes without an additional token
   (SECURITY.md §13.1).
@@ -568,18 +568,18 @@ once by `LoadLegacyServers` (129-163).
 
 | # | Severity | Risk | Evidence | Recommendation |
 |---|---|---|---|---|
-| 1 | ~~**Crit**~~ | ~~Root-owned `0600` socket not connectable by the unprivileged core; no `SO_PEERCRED`, no `chown`.~~ **RESOLVED** — helper `chown`s socket + parent dir to the pkexec caller (`PKEXEC_UID`) and rejects peers whose uid differs (`SO_PEERCRED`). | helperhost.go:26-52; LINUX.md:448; §5 empirical mode test | Fixed; still verify on a real pkexec run (root path), since the unit tests exercise unprivileged↔unprivileged. |
+| 1 | ~~**Crit**~~ | ~~Root-owned `0600` socket not connectable by the unprivileged core; no `SO_PEERCRED`, no `chown`.~~ **RESOLVED** — helper `chown`s socket + parent dir to the pkexec caller (`PKEXEC_UID`) and rejects peers whose uid differs (`SO_PEERCRED`). | helperhost.go:26-52; LINUX.md:452; §5 empirical mode test | Fixed; still verify on a real pkexec run (root path), since the unit tests exercise unprivileged↔unprivileged. |
 | 2 | **High** | Credentials (password/UUID/SSH key) cross the helper socket in plaintext JSON. | helperproto.go:18; engine/config.go:71-93 | Encrypt `engine.Options` or move credentials into the SecretStore and send only refs; at minimum document the trust boundary. |
-| 3 | **High** | Redaction coverage is incomplete: Reality keys, SSH host key, WS Host/path and other fields are not registered. | server_repository.go:285; redactor.go:25-70 | The **not-additive** failure is fixed (`Redactor.Add` now folds into a master union pattern, `TestRedactorIsAdditive`). Remaining: register every credential-bearing field + add a redaction test per protocol with full profile round-trip. |
-| 4 | ~~**Med**~~ | ~~No keepalive `ping` is ever sent; a hung helper is only detected by request timeouts (30 s/5 s).~~ **RESOLVED** — client pings every 15 s (5 s timeout) and drops a non-answering helper. | helper_client.go:36-42,335-378; helperhost.go:56-57 | Keepalive shipped (`TestHelperClientSendsKeepalivePing`, `TestHelperClientDetectsWedgedHelper`); remaining gap is helper *death* not pushed to the state machine (row 5). |
-| 5 | **Med** | Helper death while connected is not pushed to the UI state machine. | helper_client.go:272,365-367; LINUX.md:452 | Wire `readLoop` exit into `vpn.Service` (auto-reconnect/`error` state). |
+| 3 | ~~**High**~~ | ~~Redaction coverage is incomplete: Reality keys, SSH host key, WS Host/path and other fields are not registered.~~ **RESOLVED** — `registerRedact` now registers every credential-bearing field (password/UUID/private key, SSH host key, Reality public key/shortId/spiderX, WS host/path); verified by a full-profile round-trip test. | server_repository.go:283-295; redactor.go:25-70 | Done (`TestRedactorCoversCredentialFields`); the <3-char carve-out intentionally still skips tiny common words. |
+| 4 | ~~**Med**~~ | ~~No keepalive `ping` is ever sent; a hung helper is only detected by request timeouts (30 s/5 s).~~ **RESOLVED** — client pings every 15 s (5 s timeout) and drops a non-answering helper; the drop now also surfaces to the state machine (row 5). | helper_client.go:36-42,335-378; helperhost.go:56-57 | Keepalive + loss signal shipped (`TestHelperClientSendsKeepalivePing`, `TestHelperClientDetectsWedgedHelper`, `TestHelperClientNotifiesLostOnDeath`). |
+| 5 | ~~**Med**~~ | ~~Helper death while connected is not pushed to the UI state machine.~~ **RESOLVED** — `readLoop` exit fires a per-connection `lost` signal selected on by `vpn.Service` (reconnect or `Error`). | helper_client.go:315-321; service.go:315,331-352 (`Lost()`, runLoop select); LINUX.md:456 | Done (`TestHelperClientNotifiesLostOnDeath`, `TestTunnelLostAutoReconnects`, `TestTunnelLostExhaustsRetries`). |
 | 6 | **Med** | `C.CString` reply leaked if Dart drops the pointer without `omniproxy_free_string`. | glue.go:156-163; FLUTTER_GO_FFI.md:555-572 | Keep the ABI discipline; add a Dart-side leak guard/test; consider returning length+ptr from a single allocation. |
 | 7 | **Med** | Ring overflow re-allocates a fresh slice on every push (GC churn under burst); events are silently dropped. | ring.go:34 | Pre-allocated circular buffer (head/tail indices) instead of `append`-and-copy; add drop counters. |
 | 8 | **Med** | D-Bus Secret Service on the request path can stall the first key write (blocking). | crypto.go:49; go-keyring `keyring_unix.go` | Timeout/retry the keyring Set; surface a warning instead of hanging connect/save. |
 | 9 | **Low–Med** | Corrupt data key is silently deleted and regenerated, orphaning the sealed settings blob (recovered as defaults). | crypto.go:39; engine.go:232-246 | Preserve the corrupt key as a backup before deletion; log the recovery. |
 | 10 | **Low** | `Chmod` after `Listen` and stale `Remove` have small TOCTOU windows; dir fsync missing after rename. | helperhost.go:28-34; engine.go:82-89 | `Chmod`/`fchmod` before `Listen`; `os.Remove` only after confirming staleness; fsync the parent dir after `Rename`. |
-| 11 | **Low** | No polkit policy action ships, so every VPN connect prompts (UX). | helper_client.go:56; LINUX.md:456 | Ship a `org.omniproxy.helper.policy` allowing the user's own UID without re-prompt. |
-| 12 | **Low** | Two Go runtimes in VPN mode double memory/CPU; helper re-parses the same sing-box config. | helperhost.go:99-100; LINUX.md:460 | Accepted for MVP; revisit a single-process fd-capable design in Phase 2. |
+| 11 | **Low** | No polkit policy action ships, so every VPN connect prompts (UX). | helper_client.go:56; LINUX.md:460 | Ship a `org.omniproxy.helper.policy` allowing the user's own UID without re-prompt. |
+| 12 | **Low** | Two Go runtimes in VPN mode double memory/CPU; helper re-parses the same sing-box config. | helperhost.go:99-100; LINUX.md:464 | Accepted for MVP; revisit a single-process fd-capable design in Phase 2. |
 
 ## 12. Related documents
 

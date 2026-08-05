@@ -12,6 +12,12 @@ type Runner interface {
 	Start(opts engine.Options) error
 	Stop() error
 	Running() bool
+	// Lost returns a channel that closes when the active run dies unexpectedly
+	// (e.g. the privileged helper process exits while connected). Runners that
+	// cannot lose a run asynchronously return nil, which never fires in a
+	// select. The channel is per-connection: it is replaced when a new helper
+	// is spawned, so callers must re-read Lost() after each successful Start.
+	Lost() <-chan struct{}
 }
 
 // PlatformSetter is implemented by runners that accept a sing-box platform
@@ -47,6 +53,10 @@ func (r *InProcessRunner) Stop() error { return r.eng.Close() }
 
 // Running implements Runner.
 func (r *InProcessRunner) Running() bool { return r.eng.Running() }
+
+// Lost implements Runner: the in-process engine cannot die asynchronously
+// without Start/Stop returning an error, so it never signals loss.
+func (r *InProcessRunner) Lost() <-chan struct{} { return nil }
 
 // engineLogSink adapts the core logger to the engine log interface. The logger
 // redacts every message before it reaches any sink or subscriber.
