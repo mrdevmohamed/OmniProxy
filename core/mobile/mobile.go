@@ -58,13 +58,59 @@ type initConfig struct {
 	LogLevel string `json:"logLevel"`
 }
 
+// SecretStore is implemented by the Kotlin host. It is the OS-native secure
+// storage boundary (Android Keystore) that backs the core's at-rest data key
+// and credential refs, so they survive a process restart. Mirrors
+// secret.Store; see KeystoreSecretStore in the Kotlin glue.
+type SecretStore interface {
+	Get(key string) (string, error)
+	Set(key, value string) error
+	Delete(key string) error
+}
+
+// androidSecretStore adapts the Kotlin SecretStore to secret.Store. gomobile
+// proxies a Java null return as ("", nil), so a missing key must be remapped
+// onto secret.ErrNotFound for the core's sentinel checks.
+type androidSecretStore struct {
+	impl SecretStore
+}
+
+func (s *androidSecretStore) Get(key string) (string, error) {
+	v, err := s.impl.Get(key)
+	if err != nil {
+		return "", err
+	}
+	if v == "" {
+		return "", secret.ErrNotFound
+	}
+	return v, nil
+}
+
+func (s *androidSecretStore) Set(key, value string) error {
+	return s.impl.Set(key, value)
+}
+
+func (s *androidSecretStore) Delete(key string) error {
+	return s.impl.Delete(key)
+}
+
+var secretStore secret.Store
+
+// SetSecretStore registers the Kotlin Keystore-backed SecretStore. Must be
+// called before Init (Init rebuilds the facade with the registered store);
+// passing nil clears it, and Init falls back to an in-memory store.
+func SetSecretStore(s SecretStore) {
+	mu.Lock()
+	defer mu.Unlock()
+	if s == nil {
+		secretStore = nil
+		return
+	}
+	secretStore = &androidSecretStore{impl: s}
+}
+
 // Init builds the facade. configJSON carries {dataDir, logLevel}. Safe to call
 // again (replaces the previous facade); returns an error on failure.
-//
-// TODO(M9 security review): the Android SecretStore is a throwaway InMemory
-// store until then — the at-rest data key and credential refs do not survive a
-// process restart. Wire the Android Keystore data-key handoff there; see
-// docs/platform-notes.md §Android.
 func Init(configJSON string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -91,13 +137,23 @@ func Init(configJSON string) error {
 	runner = tunnel.NewInProcessRunner(logger)
 	tunPlat = engine.NewFdTunPlatform()
 
+	// Prefer the Keystore-backed store registered by the Kotlin host; fall back
+	// to an in-memory store when absent (e.g. tests / other platforms). Without
+	// a persistent store the at-rest data key and credential refs are
+	// regenerated on every process restart, which breaks decryption of the
+	// stored config ("secret: data corrupt or key mismatch").
+	secrets := secretStore
+	if secrets == nil {
+		secrets = secret.NewInMemory()
+	}
+
 	f, err := core.New(core.Config{
 		Platform:    "android",
 		DataDir:     dataDir,
 		LogLevel:    level,
 		Logger:      logger,
 		Runner:      runner,
-		SecretStore: secret.NewInMemory(),
+		SecretStore: secrets,
 	})
 	if err != nil {
 		return err

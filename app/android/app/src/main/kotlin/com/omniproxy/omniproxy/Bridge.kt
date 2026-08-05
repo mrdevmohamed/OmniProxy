@@ -63,6 +63,10 @@ object Bridge {
         val cfg = JSONObject()
             .put("dataDir", dataDir)
             .put("logLevel", "info")
+        // Must be registered before init: Init rebuilds the core facade with
+        // the registered SecretStore, and the at-rest data key + credential
+        // refs must survive a process restart (KeystoreSecretStore).
+        Mobile.setSecretStore(KeystoreSecretStore(appContext!!))
         Mobile.init(cfg.toString())
         initialized = true
         startDefaultNetworkMonitor()
