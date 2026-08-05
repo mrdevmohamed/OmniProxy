@@ -18,6 +18,10 @@ import (
 // ErrBusy is returned when an operation cannot be honored in the current state.
 var ErrBusy = errors.New("vpn: busy")
 
+// disconnectTimeout bounds how long Disconnect waits on a run loop before
+// force-disconnecting. A var so tests can shrink it.
+var disconnectTimeout = 5 * time.Second
+
 // ProfileResolver resolves a server id to a profile at connect time.
 type ProfileResolver interface {
 	Resolve(serverID string) (*models.ServerProfile, error)
@@ -163,8 +167,26 @@ func (s *Service) Connect(serverID string, mode models.ConnectionMode) error {
 		s.mu.Unlock()
 		return ErrBusy
 	}
-	if s.active != nil {
-		s.active.cancel() // reap a loop that has not finished tearing down yet
+	stale := s.active
+	s.mu.Unlock()
+
+	// A prior loop may still be alive (its Start call can block past a
+	// force-disconnect). Reap it before starting so two loops never race over
+	// the tunnel or clobber each other's state.
+	if stale != nil {
+		stale.cancel()
+		_ = s.tunnel.Stop()
+		select {
+		case <-stale.done:
+		case <-time.After(disconnectTimeout):
+		}
+	}
+
+	s.mu.Lock()
+	// Another connect may have slipped in while the stale loop was reaped.
+	if s.state == models.StateConnecting || s.state == models.StateConnected || s.state == models.StateReconnecting {
+		s.mu.Unlock()
+		return ErrBusy
 	}
 	session := &models.VPNSession{
 		ID:        models.NewID(),
@@ -209,7 +231,7 @@ func (s *Service) Disconnect() error {
 	select {
 	case <-rs.done:
 		return nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(disconnectTimeout):
 		s.forceDisconnect()
 		return nil
 	}
@@ -249,11 +271,23 @@ func (s *Service) runLoop(rs *runState, p *models.ServerProfile, mode models.Con
 	attempt := 0
 	for {
 		err := s.tunnel.Start(p, mode)
+		if !s.isActive(rs) {
+			// A newer Connect replaced (or a force-disconnect ended) this run
+			// while Start was in flight: exit without touching shared state or
+			// the tunnel.
+			return
+		}
 		if err == nil {
 			attempt = 0
 			s.transition(rs, models.StateConnected, nil)
 			s.logger.Infof("vpn", "connected to %q", p.Name)
 		} else {
+			// A failed Start can still leave the tunnel up (a stale engine may
+			// survive a force-disconnect, or a helper's engine may start after
+			// a connect response timed out). Stop it before retrying so a retry
+			// can never fail with "already running", and so the tunnel can
+			// never keep routing traffic while the UI reports Reconnecting.
+			s.stopIfActive(rs)
 			if !s.shouldRetry(attempt) {
 				s.transitionError(rs, err)
 				return
@@ -315,13 +349,16 @@ func (s *Service) wait(rs *runState, delay time.Duration) bool {
 	defer t.Stop()
 	select {
 	case cmd := <-rs.cmds:
+		if !s.isActive(rs) {
+			return false
+		}
 		if cmd == cmdDisconnect {
 			s.teardown(rs, models.StateDisconnected, nil)
 			return false
 		}
 		return true // reconnect: retry now
 	case <-t.C:
-		return true
+		return s.isActive(rs)
 	case <-rs.ctx.Done():
 		s.teardown(rs, models.StateDisconnected, nil)
 		return false
@@ -329,8 +366,13 @@ func (s *Service) wait(rs *runState, delay time.Duration) bool {
 }
 
 // transition updates state, session history, and emits a stateChanged event.
+// A run loop that is no longer active cannot transition the service.
 func (s *Service) transition(rs *runState, state models.ConnectionState, err error) {
 	s.mu.Lock()
+	if s.active != rs {
+		s.mu.Unlock()
+		return
+	}
 	s.state = state
 	if sess := rs.session; sess != nil {
 		sess.AddState(state)
@@ -347,10 +389,33 @@ func (s *Service) transitionError(rs *runState, err error) {
 	s.logger.Errorf("vpn", "tunnel failed: %v", err)
 }
 
-// teardown stops the tunnel and finalizes the session. Idempotent.
-func (s *Service) teardown(rs *runState, state models.ConnectionState, sessErr *models.SessionError) {
-	_ = s.tunnel.Stop()
+// isActive reports whether rs is still the live run loop. A run loop must not
+// touch shared state or the tunnel once it has been replaced or ended.
+func (s *Service) isActive(rs *runState) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active == rs
+}
+
+// stopIfActive stops the tunnel while rs is still the live run loop. A loop
+// that has been replaced must not touch the tunnel (the new session owns it).
+func (s *Service) stopIfActive(rs *runState) {
+	s.mu.Lock()
+	active := s.active == rs
+	s.mu.Unlock()
+	if active {
+		_ = s.tunnel.Stop()
+	}
+}
+
+// teardown stops the tunnel and finalizes the session. Idempotent, and a no-op
+// for a run loop that is no longer active (a newer session owns the tunnel).
+func (s *Service) teardown(rs *runState, state models.ConnectionState, sessErr *models.SessionError) {
+	s.mu.Lock()
+	if s.active != rs {
+		s.mu.Unlock()
+		return
+	}
 	sess := rs.session
 	if sess != nil && sess.EndedAt == nil {
 		now := time.Now().UTC()
@@ -362,6 +427,7 @@ func (s *Service) teardown(rs *runState, state models.ConnectionState, sessErr *
 	}
 	s.state = state
 	s.mu.Unlock()
+	_ = s.tunnel.Stop()
 	s.emitState(state)
 	s.logger.Infof("vpn", "session ended: %s", state)
 }
@@ -381,17 +447,29 @@ func (s *Service) finish(rs *runState) {
 	close(rs.done)
 }
 
-// forceDisconnect is the safety net for a loop that ignores commands.
+// forceDisconnect is the safety net for a loop that ignores commands. It marks
+// the run dead immediately (so a loop still blocked inside Start exits without
+// touching state or the tunnel) and stops the tunnel itself.
 func (s *Service) forceDisconnect() {
 	s.mu.Lock()
 	rs := s.active
-	s.mu.Unlock()
 	if rs == nil {
+		s.mu.Unlock()
 		return
 	}
 	rs.cancel()
+	s.active = nil
+	s.state = models.StateDisconnected
+	if sess := rs.session; sess != nil && sess.EndedAt == nil {
+		now := time.Now().UTC()
+		sess.EndedAt = &now
+		sess.AddState(models.StateDisconnected)
+	}
+	s.mu.Unlock()
+
 	_ = s.tunnel.Stop()
-	s.teardown(rs, models.StateDisconnected, nil)
+	s.emitState(models.StateDisconnected)
+	s.logger.Infof("vpn", "session ended: %s", models.StateDisconnected)
 }
 
 func (s *Service) sendCmd(rs *runState, c command) {

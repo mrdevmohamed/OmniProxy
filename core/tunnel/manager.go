@@ -77,13 +77,14 @@ func (m *Manager) Start(p *models.ServerProfile, mode models.ConnectionMode) err
 	return nil
 }
 
-// Stop ends the current run. Idempotent; safe when idle.
+// Stop ends the current run. Idempotent; safe when idle. The runner is always
+// stopped, even when no profile is tracked: a Start can fail while the engine
+// (or a privileged helper's engine) comes up anyway, and stopping the runner
+// guarantees a half-started tunnel can never keep routing traffic under a
+// Disconnected/Error session.
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.profile == nil {
-		return nil
-	}
 	err := m.runner.Stop()
 	m.profile, m.mode = nil, ""
 	m.logger.Infof("tunnel", "stopped")

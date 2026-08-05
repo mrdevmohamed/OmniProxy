@@ -97,7 +97,7 @@ func testServer(id string) *models.ServerProfile {
 	return &models.ServerProfile{ID: id, Name: "srv", Address: "10.0.0.1", Port: 443}
 }
 
-func newService(t *testing.T, tun *fakeTunneler) (*Service, *collector) {
+func newService(t *testing.T, tun Tunneler) (*Service, *collector) {
 	t.Helper()
 	col := &collector{}
 	bus := api.NewEventBus()
@@ -295,4 +295,230 @@ func TestDisconnectFromError(t *testing.T) {
 	if svc.State() != models.StateDisconnected {
 		t.Fatalf("expected disconnected, got %s", svc.State())
 	}
+}
+
+type blockingTunneler struct {
+	mu         sync.Mutex
+	startedA   chan struct{}
+	releaseA   chan struct{}
+	startCalls int
+	stopCalls  int
+}
+
+func newBlockingTunneler() *blockingTunneler {
+	return &blockingTunneler{startedA: make(chan struct{}), releaseA: make(chan struct{})}
+}
+
+func (t *blockingTunneler) Start(_ *models.ServerProfile, _ models.ConnectionMode) error {
+	t.mu.Lock()
+	t.startCalls++
+	first := t.startCalls == 1
+	t.mu.Unlock()
+	if first {
+		close(t.startedA)
+		<-t.releaseA
+	}
+	return nil
+}
+
+func (t *blockingTunneler) Stop() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopCalls++
+	return nil
+}
+
+func (t *blockingTunneler) waitFirstStart(tt *testing.T) {
+	tt.Helper()
+	select {
+	case <-t.startedA:
+	case <-time.After(3 * time.Second):
+		tt.Fatal("first Start never began")
+	}
+}
+
+func (t *blockingTunneler) counts() (int, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.startCalls, t.stopCalls
+}
+
+// stickyTunneler models an engine that "comes up" while a Start is in flight and
+// stays up until explicitly stopped: the first Start blocks until released and then
+// reports success (the tunnel starts routing traffic), later Starts fail with
+// "already running" while the tunnel is up. This simulates a force-disconnected
+// session whose engine keeps running, or a helper engine that starts after its
+// connect response timed out.
+type stickyTunneler struct {
+	mu         sync.Mutex
+	startedA   chan struct{}
+	releaseA   chan struct{}
+	up         bool
+	startCalls int
+	stopCalls  int
+}
+
+func newStickyTunneler() *stickyTunneler {
+	return &stickyTunneler{startedA: make(chan struct{}), releaseA: make(chan struct{})}
+}
+
+func (t *stickyTunneler) Start(_ *models.ServerProfile, _ models.ConnectionMode) error {
+	t.mu.Lock()
+	t.startCalls++
+	first := t.startCalls == 1
+	up := t.up
+	t.mu.Unlock()
+	if first {
+		close(t.startedA)
+		<-t.releaseA
+		// The engine comes up and keeps routing traffic — nothing stopped it.
+		t.mu.Lock()
+		t.up = true
+		t.mu.Unlock()
+		return nil
+	}
+	if up {
+		return errors.New("tunnel: already running")
+	}
+	return nil
+}
+
+func (t *stickyTunneler) Stop() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopCalls++
+	t.up = false
+	return nil
+}
+
+func (t *stickyTunneler) counts() (int, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.startCalls, t.stopCalls
+}
+
+func (t *stickyTunneler) waitUp(tt *testing.T) {
+	tt.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		t.mu.Lock()
+		up := t.up
+		t.mu.Unlock()
+		if up {
+			return
+		}
+		if time.Now().After(deadline) {
+			tt.Fatal("orphaned tunnel never came up")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestNoFalseErrorWhenTunnelLeftRunning reproduces the bug where the UI reports
+// Disconnected/Error while the tunnel is actually up and passing traffic: a
+// disconnect during a slow connect leaves the engine running, and the next
+// connect then fails with "already running" on every retry until it gives up in
+// Error. The service must stop the leftover tunnel before retrying, so the
+// retried start succeeds and the session lands in Connected.
+func TestNoFalseErrorWhenTunnelLeftRunning(t *testing.T) {
+	old := disconnectTimeout
+	disconnectTimeout = 40 * time.Millisecond
+	defer func() { disconnectTimeout = old }()
+
+	tun := newStickyTunneler()
+	svc, _ := newService(t, tun)
+	svc.SetAutoReconnect(true)
+	svc.SetRetryPolicy(testPolicy{delay: time.Millisecond, max: 3})
+
+	if err := svc.Connect("srv-1", models.ModeVPN); err != nil {
+		t.Fatalf("connect A: %v", err)
+	}
+	select {
+	case <-tun.startedA:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first Start never began")
+	}
+
+	// Disconnect while the connect is still in flight forces a disconnect;
+	// the in-flight Start completes afterwards and leaves the tunnel up.
+	if err := svc.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	if got := svc.State(); got != models.StateDisconnected {
+		t.Fatalf("state after disconnect = %s, want %s", got, models.StateDisconnected)
+	}
+	close(tun.releaseA)
+	tun.waitUp(t)
+	waitState(t, svc, models.StateDisconnected)
+
+	// Reconnect: the first attempt hits "already running" from the orphaned
+	// tunnel. With the fix the service stops it and retries cleanly; without
+	// it the retries all fail and the service parks in a false Error.
+	if err := svc.Connect("srv-1", models.ModeVPN); err != nil {
+		t.Fatalf("connect B: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if svc.State() == models.StateConnected {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := svc.State(); got != models.StateConnected {
+		t.Fatalf("state after reconnect = %s, want %s (false Error while tunnel was up)", got, models.StateConnected)
+	}
+
+	starts, stops := tun.counts()
+	if starts < 3 {
+		t.Fatalf("expected the retried start to run, got starts=%d", starts)
+	}
+	if stops < 2 {
+		t.Fatalf("expected the leftover tunnel to be stopped, got stops=%d", stops)
+	}
+	_ = svc.Disconnect()
+	waitState(t, svc, models.StateDisconnected)
+}
+
+// TestConnectAfterForceDisconnect races a connect against a loop still blocked
+// inside Start. The stale loop must neither clobber the new session's state nor
+// stop its tunnel.
+func TestConnectAfterForceDisconnect(t *testing.T) {
+	old := disconnectTimeout
+	disconnectTimeout = 40 * time.Millisecond
+	defer func() { disconnectTimeout = old }()
+
+	tun := newBlockingTunneler()
+	svc, _ := newService(t, tun)
+	svc.SetAutoReconnect(false)
+
+	if err := svc.Connect("srv-1", models.ModeVPN); err != nil {
+		t.Fatalf("connect A: %v", err)
+	}
+	tun.waitFirstStart(t)
+
+	if err := svc.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	if got := svc.State(); got != models.StateDisconnected {
+		t.Fatalf("state after disconnect = %s, want %s", got, models.StateDisconnected)
+	}
+
+	if err := svc.Connect("srv-1", models.ModeVPN); err != nil {
+		t.Fatalf("connect B: %v", err)
+	}
+	close(tun.releaseA)
+
+	waitState(t, svc, models.StateConnected)
+	if sess := svc.Session(); sess == nil || sess.ServerID != "srv-1" {
+		t.Fatalf("session after reconnect: %+v", sess)
+	}
+	starts, stops := tun.counts()
+	if starts < 2 {
+		t.Fatalf("expected B to start the tunnel, got starts=%d", starts)
+	}
+	if stops != 1 {
+		t.Fatalf("expected exactly one Stop (from force-disconnect), got %d", stops)
+	}
+	_ = svc.Disconnect()
+	waitState(t, svc, models.StateDisconnected)
 }
