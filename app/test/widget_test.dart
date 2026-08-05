@@ -162,4 +162,111 @@ void main() {
     expect(find.textContaining('Connected to'), findsOneWidget);
     expect(find.text('INFO'), findsWidgets);
   });
+
+  testWidgets('settings tab toggles Advanced Mode', (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Enable Advanced Mode'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Enable Advanced Mode'));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(SettingsScreen)));
+    expect(container.read(settingsProvider).advancedModeEnabled, isTrue);
+  });
+
+  testWidgets('server form gates insecure certs behind Advanced Mode',
+      (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Servers'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Add server'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('TLS'));
+    await tester.pumpAndSettle();
+
+    // Default flow (Advanced Mode off): toggle present but locked.
+    final locked = tester.widget<SwitchListTile>(find.widgetWithText(
+        SwitchListTile, 'Allow insecure certificates'));
+    expect(locked.onChanged, isNull);
+    expect(find.textContaining('Requires Advanced Mode'), findsOneWidget);
+
+    // Back out, enable Advanced Mode, and re-open the form.
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Enable Advanced Mode'),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Enable Advanced Mode'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Servers'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Add server'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('TLS'));
+    await tester.pumpAndSettle();
+
+    // Advanced Mode on: interactive, and enabling shows an explicit warning.
+    final editable = tester.widget<SwitchListTile>(find.widgetWithText(
+        SwitchListTile, 'Allow insecure certificates'));
+    expect(editable.onChanged, isNotNull);
+
+    await tester.ensureVisible(find.text('Allow insecure certificates'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Allow insecure certificates'));
+    await tester.pumpAndSettle();
+    expect(find.text('Disable certificate validation?'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<SwitchListTile>(find.widgetWithText(
+              SwitchListTile, 'Allow insecure certificates'))
+          .value,
+      isFalse,
+    );
+
+    await tester.ensureVisible(find.text('Allow insecure certificates'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Allow insecure certificates'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('I understand'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<SwitchListTile>(find.widgetWithText(
+              SwitchListTile, 'Allow insecure certificates'))
+          .value,
+      isTrue,
+    );
+  });
 }

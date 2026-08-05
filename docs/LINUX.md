@@ -195,7 +195,7 @@ Alternatives and why they were not chosen:
 - The app process stays unprivileged; only the helper is root, and only for the duration of a session.
 - The helper's scope is narrow: authenticate (via pkexec), own the engine lifecycle, configure TUN/routing. It contains **no tunnel-protocol logic** beyond what the shared `engine` module provides (`docs/platform-notes.md:65`; `core/tunnel/helperhost/helperhost.go:1-5`). It is "embedded sing-box, never shelled out" — it links the module; it is not the sing-box CLI.
 - The helper never re-derives configuration. The full `engine.Options` (which includes the server profile, protocol settings, and SSH/TLS material) is serialized into the `connect` message (`core/tunnel/helperproto/helperproto.go:12-19`). The shared `engine` module is the single builder on both sides (`core/tunnel/helperhost/helperhost.go:87-89`).
-- The control socket is created under the user's `$XDG_RUNTIME_DIR` in a `0700` directory and the socket file is `chmod`'d to `0600` (`core/tunnel/helper_proto.go:25-35`, `core/tunnel/helperhost/helperhost.go:25,34-36`) — see §6.4 and the caveat in §10 about *ownership* of that socket.
+- The control socket is created under the user's `$XDG_RUNTIME_DIR` in a `0700` directory and the socket file is `chmod`'d to `0600` (`core/tunnel/helper_proto.go:25-35`, `core/tunnel/helperhost/helperhost.go:25,34-36`). When spawned via pkexec, the helper `chown`s the socket (and its parent dir) to the caller identified by `PKEXEC_UID` and verifies connecting peers via `SO_PEERCRED` (§6.4).
 - Engine log lines cross the socket as plaintext JSON but are redacted **before** they reach any log sink or the UI: the client feeds them into the core's redacting logger (`core/tunnel/helper_client.go:249-252`; `core/log/logger.go:138`; PRD-mandated "logs never contain credentials/keys/traffic").
 - If the user **cancels the pkexec dialog**, no helper is spawned, the core's dial-retry loop exhausts the 15 s spawn timeout (`core/tunnel/helper_client.go:193-203`), and the failure is classified onto the contract code `unauthorized` (PRD §3.3; `core/vpn/service.go:513-526` — the classifier matches `"privileged helper"`), which the UI maps to actionable text.
 
@@ -265,7 +265,7 @@ sequenceDiagram
         G->>P: spawn "pkexec omniproxy-helper --socket <path>"
         P-->>P: polkit authorization prompt (user consents)
         P->>H: run omniproxy-helper as root
-        H->>H: MkdirAll(dir,0700); listen; chmod(sock,0600)
+        H->>H: MkdirAll(dir,0700); listen; chown(sock+dir, PKEXEC_UID); chmod(sock,0600)
         loop retry dial every 200 ms, up to helperSpawnTimeout = 15 s
             G->>H: net.Dial("unix", socketPath)
         end
@@ -333,7 +333,12 @@ The **one-client guarantee** is structural: `helperhost.Run` calls `Accept` exac
 
 ### 6.4 Authentication and access control
 
-The socket lives at `$XDG_RUNTIME_DIR/omniproxy/helper.sock`, falling back to `/tmp/omniproxy/helper.sock` when `XDG_RUNTIME_DIR` is unset, with the parent directory `MkdirAll`'d to `0700` (`core/tunnel/helper_proto.go:25-35`). The helper `chmod`s the socket to `0600` (`helperhost.go:34-36`). Authentication to root is delegated entirely to pkexec; the socket itself is not authenticated further — there is **no `SO_PEERCRED` check and no `chown` back to the calling user in the current code** (verified: no matches for `Chown`/`PeerCred`/`setuid` in `core/` or `engine/`). See §10 for the ownership caveat this creates.
+The socket lives at `$XDG_RUNTIME_DIR/omniproxy/helper.sock`, falling back to `/tmp/omniproxy/helper.sock` when `XDG_RUNTIME_DIR` is unset, with the parent directory `MkdirAll`'d to `0700` (`core/tunnel/helper_proto.go:25-35`). Authentication to root is delegated to pkexec; the socket then uses two layers of peer control:
+
+- **Ownership hand-back.** A pkexec-spawned helper reads `PKEXEC_UID` (the real invoking uid) and `chown`s both the socket and its parent directory to that uid (`core/tunnel/helperhost/helperhost.go:26-40`). A direct spawn (tests/dev, no `PKEXEC_UID`) leaves ownership unchanged, so the default path is untouched.
+- **Peer verification.** After `Accept`, the helper checks the peer via `SO_PEERCRED` (`GetsockoptUcred`, `helperhost.go:47-52`); a peer whose uid differs from the invoker is rejected. Combined with `chmod 0600` (and the `0700` parent), this means *only the invoking user's core can connect* — a same-uid user could still impersonate the core (the same trust boundary as the user's own profile store).
+
+Covered by `TestPkexecInvoker` (`core/tunnel/helperhost/helperhost_internal_test.go`); the end-to-end root path still needs verification on a real pkexec run (§10 item 1).
 
 ### 6.5 fd handoff? — No. (and a stale note to ignore)
 
@@ -341,10 +346,9 @@ The socket lives at `$XDG_RUNTIME_DIR/omniproxy/helper.sock`, falling back to `/
 
 ### 6.6 Keepalive ping, disconnects, timeouts
 
-The protocol **defines** `ping`, and the server implements it (`helperhost.go:56-57,135-143`), but the current client never sends one — there is no `ping` method on `helperClient` (verified: no `ping` sender in `core/tunnel/helper_client.go`). Consequences (see §10):
+The client runs an **active keepalive** in the background. After dialing, it starts a goroutine that sends a `ping` every `helperPingInterval` (15 s) with a `helperPingTimeout` (5 s) per round-trip (`core/tunnel/helper_client.go:36-42,335-378`); the server handles `ping`/`pong` (`helperhost.go:56-57,135-143`). A helper that stops answering (wedged) causes the client to log and drop the connection (`close(false)`), so the next operation re-spawns the helper.
 
-- There is **no active keepalive** as-built. A helper that hangs is only noticed when the next request times out (`connect` 30 s / `disconnect` 5 s).
-- If the helper process dies, the socket closes, `readLoop` exits and calls `close(false)` (`helper_client.go:272`), which fails all pending waiters with `"helper: connection closed"` (`:365-367`). But nothing pushes that to the `vpn.Service` state machine — the UI only learns about it on the *next* command.
+Remaining client-side gap: if the helper *process dies*, the socket closes, `readLoop` exits and calls `close(false)` (`helper_client.go:272`), which fails all pending waiters with `"helper: connection closed"` (`:365-367`). But nothing pushes that to the `vpn.Service` state machine — the UI only learns about it on the *next* command (§10 item 3).
 
 Timeouts are client-side only: spawn 15 s (dial-retry loop at 200 ms intervals, `helper_client.go:193-203`), connect 30 s, disconnect 5 s (`helper_client.go:31-35`).
 
@@ -445,9 +449,9 @@ There is no `.deb`/`.rpm`/Flatpak packaging as-built — the bundle is a relocat
 
 ## 10. Known gaps & limitations
 
-1. **Socket ownership wrinkle (verify before release).** The helper runs as root (pkexec) and creates the socket as a root-owned inode, then `chmod 0600` (`helperhost.go:34-36`). A `0600` socket is only connectable by its owner — i.e. root — while the core is unprivileged. The current code neither `chown`s the socket back to the caller nor checks `SO_PEERCRED`, so a strict reading says the unprivileged app could not connect. Options: `chown` the socket to the real uid obtained via `SO_PEERCRED`, or authenticate the client over the socket. **Flagged for verification**; the tests only exercise the socket unprivileged-to-unprivileged (`core/tunnel/helperhost_test.go:16-20`), which does not reproduce the root ownership.
+1. ~~**Socket ownership wrinkle (verify before release).**~~ **RESOLVED** — the helper now hands the socket back to the pkexec caller and checks `SO_PEERCRED`: a pkexec-spawned helper reads `PKEXEC_UID` and `chown`s the socket + parent dir to that uid, and rejects any peer whose uid differs after `Accept` (`core/tunnel/helperhost/helperhost.go:26-40,47-52`; §6.4). The unit tests exercise the direct-spawn path (unprivileged↔unprivileged, `core/tunnel/helperhost_test.go:16-20`) and `TestPkexecInvoker` covers the uid resolution; the root path still needs **verification on a real pkexec run before release**.
 
-2. **No active keepalive ping.** The protocol defines `ping` and the server implements it (`helperhost.go:135-143`), but the client never sends one (§6.6). A hung helper is only detected by the next request's timeout (30 s/5 s).
+2. ~~**No active keepalive ping.**~~ **RESOLVED** — the client pings every 15 s (5 s timeout) and drops a helper that stops answering (`core/tunnel/helper_client.go:36-42,335-378`; `TestHelperClientSendsKeepalivePing`, `TestHelperClientDetectsWedgedHelper`; §6.6).
 
 3. **Helper death while connected is not pushed to the UI.** When the helper process dies, the socket closes and pending requests fail (`helper_client.go:272,365-367`), but the `vpn.Service` state machine receives no signal; the UI keeps reporting `connected` until the user acts (or the next `disconnect` times out). Auto-reconnect on helper loss is not implemented on Linux (Android's network-change auto-reconnect is a different mechanism, `docs/platform-notes.md:21`).
 

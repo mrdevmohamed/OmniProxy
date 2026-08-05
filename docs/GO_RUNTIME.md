@@ -375,9 +375,9 @@ The key design point: these blocking calls are **not** hidden behind background 
 
 Every `omniproxy_request`/`omniproxy_poll_events` result must be freed via `omniproxy_free_string` (`core/glue/glue.go:157-161`). A buggy host leaks a few KB per call; because the allocation is invisible to the Go GC, it will not self-heal. Mitigation: contract documentation (`docs/api-contract.md` §5.2) and the one-owner (library) allocator rule.
 
-### 9.8 Redactor `Add` overwrites instead of accumulating
+### 9.8 Redactor `Add` accumulates (fixed)
 
-`Redactor.Add` **replaces** the compiled regexp with only the secrets from *that call* (`core/log/redactor.go:25-47`), despite the doc comment saying "Registration is additive". Because `SQLiteServerRepository.registerRedact` re-adds each profile's credentials on every `Get`/`List` (`core/store/server_repository.go:283-287`), the effective redaction pattern is the *last profile processed*, not the union of all registered secrets. Impact: credentials of some servers may not be redacted in logs after a multi-server `listServers`. This is a genuine limitation worth a fix (accumulate into a master pattern) before release. *(Observed from source; not a concurrency bug, but a runtime correctness risk for PRD §9 log hygiene.)*
+`Redactor.Add` is **additive**: each call folds its secrets into a master map and recompiles a single case-insensitive union regex (`core/log/redactor.go:25-70`, `compile` at `:60-70`). Because `SQLiteServerRepository.registerRedact` re-adds each profile's credentials on every `Get`/`List` (`core/store/server_repository.go:283-287`), re-registration is harmless — the union of all registered secrets stays masked. Covered by `TestRedactorIsAdditive`. *(Historically `Add` replaced the compiled pattern with only that call's secrets; fixed in the hardening pass. Remaining gap is *coverage*, not semantics: not every credential-bearing field is registered — `docs/LOW_LEVEL.md:569`.)*
 
 ### 9.9 `redactValue` mutates caller context in place
 

@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ type fakeHelper struct {
 	ln      net.Listener
 	started bool
 	closed  chan struct{}
+	pings   atomic.Int64
 }
 
 func startFakeHelper(t *testing.T, dir string) *fakeHelper {
@@ -65,6 +67,7 @@ func (h *fakeHelper) handle(conn net.Conn) {
 			h.started = false
 			_ = enc.Encode(ServerMessage{Type: "response", Seq: msg.Seq, OK: true, State: "disconnected"})
 		case "ping":
+			h.pings.Add(1)
 			state := "disconnected"
 			if h.started {
 				state = "connected"
@@ -180,4 +183,77 @@ func TestHelperSocketPath(t *testing.T) {
 	if !strings.HasSuffix(p, filepath.Join("omniproxy", "helper.sock")) {
 		t.Fatalf("unexpected socket path %q", p)
 	}
+}
+
+func TestHelperClientSendsKeepalivePing(t *testing.T) {
+	origInterval := helperPingInterval
+	helperPingInterval = 50 * time.Millisecond
+	defer func() { helperPingInterval = origInterval }()
+
+	h := startFakeHelper(t, t.TempDir())
+	defer func() {
+		h.ln.Close()
+		<-h.closed
+	}()
+
+	c, err := dialHelper(h.ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.close(false)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.pings.Load() >= 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected periodic ping from the client keepalive")
+}
+
+func TestHelperClientDetectsWedgedHelper(t *testing.T) {
+	origInterval := helperPingInterval
+	origTimeout := helperPingTimeout
+	helperPingInterval = 20 * time.Millisecond
+	helperPingTimeout = 100 * time.Millisecond
+	defer func() {
+		helperPingInterval = origInterval
+		helperPingTimeout = origTimeout
+	}()
+
+	ln, err := net.Listen("unix", filepath.Join(t.TempDir(), "wedged.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Accept but never respond: simulates a wedged helper.
+		buf := make([]byte, 4096)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	c, err := dialHelper(ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.close(false)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !c.alive() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected the client to drop the wedged helper connection")
 }

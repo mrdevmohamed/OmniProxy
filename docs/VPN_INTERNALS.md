@@ -732,8 +732,8 @@ disconnect round-trip and stops the service so the app state stays consistent
   sing-tun's netlink auto-route, and teardown on disconnect/quit (§8.3).
 - **TLS validation.** Certificate validation is on by default
   (`tlsContainer`, `engine/config.go:420-434`); `allowInsecure` is never set in
-  the default flow and is gated behind Advanced Mode (Phase 2)
-  (`docs/api-contract.md:40`).
+  the default flow and requires Advanced Mode plus an explicit confirmation
+  dialog (`server_edit_screen.dart:333-354`; `docs/api-contract.md:40`).
 
 ---
 

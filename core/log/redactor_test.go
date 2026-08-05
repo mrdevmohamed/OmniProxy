@@ -40,3 +40,26 @@ func TestRedactorIgnoresShortAndDuplicateSecrets(t *testing.T) {
 		t.Fatalf("duplicate secret should redact once: %q", out)
 	}
 }
+
+func TestRedactorIsAdditive(t *testing.T) {
+	r := NewRedactor()
+	r.Add("first-secret")
+	r.Add("second-secret", "third-secret")
+	out := r.Redact("first-secret second-secret third-secret")
+	for _, leak := range []string{"first-secret", "second-secret", "third-secret"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("secret %q leaked after later Add calls: %q", leak, out)
+		}
+	}
+}
+
+func TestRedactorStillRedactsCaseInsensitiveAfterAdds(t *testing.T) {
+	r := NewRedactor()
+	r.Add("PassWord1")
+	r.Add("OTHER")
+	out := r.Redact("token PASSWORD1 and OTHER secret")
+	if strings.Contains(strings.ToLower(out), "password1") ||
+		strings.Contains(strings.ToLower(out), "other") {
+		t.Fatalf("leak after multiple adds: %q", out)
+	}
+}

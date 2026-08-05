@@ -12,38 +12,44 @@ const redactionMarker = "[REDACTED]"
 // any sink or subscriber. Registration is additive and case-insensitive;
 // secrets shorter than 3 characters are ignored to avoid mangling common words.
 type Redactor struct {
-	mu sync.RWMutex
-	re *regexp.Regexp
+	mu      sync.RWMutex
+	secrets map[string]string // lowercase secret -> last registered casing
+	re      *regexp.Regexp
 }
 
 // NewRedactor returns an empty redactor (matches nothing).
 func NewRedactor() *Redactor {
-	return &Redactor{re: regexp.MustCompile("a^")}
+	return &Redactor{
+		secrets: make(map[string]string),
+		re:      regexp.MustCompile("a^"),
+	}
 }
 
-// Add registers secrets for redaction.
+// Add registers secrets for redaction. Registration accumulates: every secret
+// added so far stays redacted (later calls never drop earlier ones).
 func (r *Redactor) Add(secrets ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var parts []string
-	seen := make(map[string]bool)
 	for _, s := range secrets {
 		s = strings.TrimSpace(s)
 		if len(s) < 3 {
 			continue
 		}
-		low := strings.ToLower(s)
-		if seen[low] {
-			continue
-		}
-		seen[low] = true
-		parts = append(parts, regexp.QuoteMeta(s))
+		r.secrets[strings.ToLower(s)] = s
 	}
-	if len(parts) == 0 {
-		return
+	r.re = r.compile()
+}
+
+func (r *Redactor) compile() *regexp.Regexp {
+	if len(r.secrets) == 0 {
+		return regexp.MustCompile("a^")
 	}
-	r.re = regexp.MustCompile("(?i)" + strings.Join(parts, "|"))
+	parts := make([]string, 0, len(r.secrets))
+	for _, original := range r.secrets {
+		parts = append(parts, regexp.QuoteMeta(original))
+	}
+	return regexp.MustCompile("(?i)" + strings.Join(parts, "|"))
 }
 
 // Redact replaces every registered secret in s with the redaction marker.

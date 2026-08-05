@@ -8,10 +8,13 @@ package helperhost
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"syscall"
 
 	"omniproxy/core/tunnel/helperproto"
 	"omniproxy/engine"
@@ -31,6 +34,18 @@ func Run(socketPath string) error {
 		return err
 	}
 	defer l.Close()
+
+	// pkexec runs us as root; hand the socket (and its parent dir) back to the
+	// invoking user so the unprivileged core can connect, then verify the
+	// connecting peer really is that user via SO_PEERCRED. When spawned
+	// directly (tests, OMNIPROXY_HELPER) there is no invoker to trust and the
+	// socket stays as-is.
+	invoker, trustPeer := pkexecInvoker()
+	if trustPeer {
+		if err := chownSocket(socketPath, invoker); err != nil {
+			return err
+		}
+	}
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		return err
 	}
@@ -40,6 +55,12 @@ func Run(socketPath string) error {
 		return err
 	}
 	defer conn.Close()
+
+	if trustPeer {
+		if uid := peerUID(conn); uid != invoker {
+			return fmt.Errorf("helper socket: rejecting peer uid %d (expected %d)", uid, invoker)
+		}
+	}
 
 	h := &Host{enc: json.NewEncoder(conn)}
 	sc := bufio.NewScanner(conn)
@@ -62,6 +83,52 @@ func Run(socketPath string) error {
 	}
 	h.StopEngine()
 	return nil
+}
+
+// pkexecInvoker returns the uid of the process that invoked pkexec, read from
+// the PKEXEC_UID environment variable pkexec sets for its child. ok is false
+// when the helper was not spawned through pkexec (direct spawn for tests) or
+// the variable is malformed.
+func pkexecInvoker() (uid int, ok bool) {
+	s := os.Getenv("PKEXEC_UID")
+	if s == "" {
+		return 0, false
+	}
+	uid, err := strconv.Atoi(s)
+	if err != nil || uid < 0 {
+		return 0, false
+	}
+	return uid, true
+}
+
+// chownSocket transfers ownership of the socket and its parent directory to
+// uid. gid is left unchanged (the dir is already owned by the invoking user,
+// who created it before spawning the helper). Idempotent.
+func chownSocket(socketPath string, uid int) error {
+	if err := os.Chown(filepath.Dir(socketPath), uid, -1); err != nil {
+		return err
+	}
+	return os.Chown(socketPath, uid, -1)
+}
+
+// peerUID returns the peer's real uid via SO_PEERCRED, or -1 when it cannot be
+// determined (non-unix conn, permission, or unsupported platform).
+func peerUID(conn net.Conn) int {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return -1
+	}
+	raw, err := uc.SyscallConn()
+	if err != nil {
+		return -1
+	}
+	uid := -1
+	_ = raw.Control(func(fd uintptr) {
+		if cred, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED); err == nil {
+			uid = int(cred.Uid)
+		}
+	})
+	return uid
 }
 
 // Host owns the engine lifecycle for the single served connection.

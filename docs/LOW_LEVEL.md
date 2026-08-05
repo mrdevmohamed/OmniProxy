@@ -287,12 +287,16 @@ reject a second tunnel while a start is still in flight (helperhost.go:90-115).
 - The socket is `chmod 0600` after bind (helperhost.go:34), and the parent
   directory is `0700` user-owned (helper_proto.go:31), so path traversal to
   the socket is gated on the invoking user's runtime dir.
-- There is **no `SO_PEERCRED` check and no `chown` back to the caller**
-  (verified: no `Chown`/`PeerCred`/`setuid` in `core/` or `engine/`;
-  LINUX.md:336). This creates the documented **socket ownership wrinkle**: the
-  helper runs as root, so the socket inode is root-owned; a `0600` socket is
-  only connectable by its owner, i.e. root, while the core is unprivileged
-  (LINUX.md:448, §10.1).
+- When spawned via pkexec, the helper additionally **hands ownership back** to
+  the invoking user and **verifies the peer**: it reads `PKEXEC_UID` and `chown`s
+  the socket + parent dir to that uid, then rejects any connecting peer whose
+  uid differs via `SO_PEERCRED` (`GetsockoptUcred`) (`helperhost.go:26-52`).
+  Direct spawns (tests/dev, no `PKEXEC_UID`) keep ownership as-is, so the
+  default path is unchanged. Covered by `TestPkexecInvoker`; the root path
+  still needs verification on a real pkexec run (LINUX.md:448).
+- Residual (unchanged): **same-uid** processes can connect — Unix socket auth
+  cannot distinguish same-user processes without an additional token
+  (SECURITY.md §13.1).
 - Empirical confirmation of the permission semantics (on-host experiment,
   `net.DialTimeout("unix", ...)`):
 
@@ -564,10 +568,10 @@ once by `LoadLegacyServers` (129-163).
 
 | # | Severity | Risk | Evidence | Recommendation |
 |---|---|---|---|---|
-| 1 | **Crit** | Root-owned `0600` socket is not connectable by the unprivileged core; no `SO_PEERCRED`, no `chown`. | helperhost.go:34; LINUX.md:448; §5 empirical mode test | Verify on a real pkexec run; then `chown` the socket to the caller's uid (via `SO_PEERCRED` before close) or switch to an authenticated client (e.g. a token over the socket). |
+| 1 | ~~**Crit**~~ | ~~Root-owned `0600` socket not connectable by the unprivileged core; no `SO_PEERCRED`, no `chown`.~~ **RESOLVED** — helper `chown`s socket + parent dir to the pkexec caller (`PKEXEC_UID`) and rejects peers whose uid differs (`SO_PEERCRED`). | helperhost.go:26-52; LINUX.md:448; §5 empirical mode test | Fixed; still verify on a real pkexec run (root path), since the unit tests exercise unprivileged↔unprivileged. |
 | 2 | **High** | Credentials (password/UUID/SSH key) cross the helper socket in plaintext JSON. | helperproto.go:18; engine/config.go:71-93 | Encrypt `engine.Options` or move credentials into the SecretStore and send only refs; at minimum document the trust boundary. |
-| 3 | **High** | Redaction coverage is incomplete: Reality keys, SSH host key, WS Host/path and other fields are not registered. | server_repository.go:285; redactor.go:25-47 | Register every credential-bearing field; add a redaction test per protocol with full profile round-trip. |
-| 4 | **Med** | No keepalive `ping` is ever sent; a hung helper is only detected by request timeouts (30 s/5 s). | helper_client.go:31-35; helperhost.go:56-57 | Send periodic `ping`; treat a socket close while connected as an engine error pushed to the state machine. |
+| 3 | **High** | Redaction coverage is incomplete: Reality keys, SSH host key, WS Host/path and other fields are not registered. | server_repository.go:285; redactor.go:25-70 | The **not-additive** failure is fixed (`Redactor.Add` now folds into a master union pattern, `TestRedactorIsAdditive`). Remaining: register every credential-bearing field + add a redaction test per protocol with full profile round-trip. |
+| 4 | ~~**Med**~~ | ~~No keepalive `ping` is ever sent; a hung helper is only detected by request timeouts (30 s/5 s).~~ **RESOLVED** — client pings every 15 s (5 s timeout) and drops a non-answering helper. | helper_client.go:36-42,335-378; helperhost.go:56-57 | Keepalive shipped (`TestHelperClientSendsKeepalivePing`, `TestHelperClientDetectsWedgedHelper`); remaining gap is helper *death* not pushed to the state machine (row 5). |
 | 5 | **Med** | Helper death while connected is not pushed to the UI state machine. | helper_client.go:272,365-367; LINUX.md:452 | Wire `readLoop` exit into `vpn.Service` (auto-reconnect/`error` state). |
 | 6 | **Med** | `C.CString` reply leaked if Dart drops the pointer without `omniproxy_free_string`. | glue.go:156-163; FLUTTER_GO_FFI.md:555-572 | Keep the ABI discipline; add a Dart-side leak guard/test; consider returning length+ptr from a single allocation. |
 | 7 | **Med** | Ring overflow re-allocates a fresh slice on every push (GC churn under burst); events are silently dropped. | ring.go:34 | Pre-allocated circular buffer (head/tail indices) instead of `append`-and-copy; add drop counters. |
@@ -584,7 +588,7 @@ once by `LoadLegacyServers` (129-163).
 - `docs/GO_RUNTIME.md` — concurrency spine, poll loop, ring design (§3),
   modernc SQLite pool (§8.1), C-string leak audit (§9.7).
 - `docs/LINUX.md` — the helper architecture, §5 (process deep-dive), §6
-  (socket protocol), §10 (known gaps incl. the socket-ownership wrinkle).
+  (socket protocol), §10 (known gaps; the socket-ownership item is resolved).
 - `docs/VPN_INTERNALS.md` — TUN per platform (§3), `FdTunPlatform` (§4),
   Linux helper (§8), security/isolation (§10).
 - `docs/ANDROID.md`, `docs/WINDOWS.md` — platform layers for the other two

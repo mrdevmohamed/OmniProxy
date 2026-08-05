@@ -164,6 +164,30 @@ class SettingsScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 16),
               _Section(
+                title: 'Advanced',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _SettingHeader(
+                      icon: Icons.developer_mode_outlined,
+                      title: 'Advanced Mode',
+                      subtitle:
+                          'Power-user options such as bypassing certificate '
+                          'validation. Hidden from the default flow.',
+                    ),
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      value: settings.advancedModeEnabled,
+                      onChanged: (v) => notifier
+                          .update(settings.copyWith(advancedModeEnabled: v)),
+                      title: const Text('Enable Advanced Mode'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _Section(
                 title: 'About',
                 child: version.when(
                   loading: () => const Padding(

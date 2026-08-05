@@ -94,6 +94,7 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final advancedMode = ref.watch(settingsProvider).advancedModeEnabled;
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEdit ? 'Edit server' : 'Add server'),
@@ -159,10 +160,11 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
               _TlsSection(
                 enabled: _tlsEnabled,
                 allowInsecure: _tlsAllowInsecure,
+                advancedMode: advancedMode,
                 serverName: _serverName,
                 fingerprint: _fingerprint,
                 onEnabled: (v) => setState(() => _tlsEnabled = v),
-                onAllowInsecure: (v) => setState(() => _tlsAllowInsecure = v),
+                onAllowInsecure: _setAllowInsecure,
               ),
               const SizedBox(height: 8),
               _TransportSection(
@@ -397,6 +399,37 @@ class _ServerEditScreenState extends ConsumerState<ServerEditScreen> {
     }
   }
 
+  /// Enables the certificate-validation bypass only after an explicit,
+  /// user-visible warning (PRD §9). Gated behind Advanced Mode in the UI.
+  Future<void> _setAllowInsecure(bool value) async {
+    if (value && !_tlsAllowInsecure) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.warning_amber_rounded),
+          title: const Text('Disable certificate validation?'),
+          content: const Text(
+            'This disables TLS certificate validation for this server. '
+            'Traffic can be intercepted or impersonated (MITM) without any '
+            'warning. Use only for testing against self-signed certificates.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('I understand'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+    setState(() => _tlsAllowInsecure = value);
+  }
+
   String _protocolLabel(ServerProtocol protocol) => switch (protocol) {
         ServerProtocol.vless => 'VLESS',
         ServerProtocol.vmess => 'VMess',
@@ -412,6 +445,7 @@ class _TlsSection extends StatelessWidget {
   const _TlsSection({
     required this.enabled,
     required this.allowInsecure,
+    required this.advancedMode,
     required this.serverName,
     required this.fingerprint,
     required this.onEnabled,
@@ -420,6 +454,7 @@ class _TlsSection extends StatelessWidget {
 
   final bool enabled;
   final bool allowInsecure;
+  final bool advancedMode;
   final TextEditingController serverName;
   final TextEditingController fingerprint;
   final ValueChanged<bool> onEnabled;
@@ -457,10 +492,12 @@ class _TlsSection extends StatelessWidget {
           const SizedBox(height: 8),
           SwitchListTile(
             value: allowInsecure,
-            onChanged: onAllowInsecure,
+            onChanged: advancedMode ? onAllowInsecure : null,
             title: const Text('Allow insecure certificates'),
-            subtitle: const Text(
-              'Disables certificate validation — use only for testing.',
+            subtitle: Text(
+              advancedMode
+                  ? 'Disables certificate validation — use only for testing.'
+                  : 'Requires Advanced Mode (Settings → Advanced).',
             ),
             contentPadding: EdgeInsets.zero,
           ),

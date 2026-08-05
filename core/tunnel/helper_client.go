@@ -34,6 +34,14 @@ const (
 	helperDisconnectTimeout = 5 * time.Second
 )
 
+// Keepalive pacing, as vars so tests can shorten them. A hung helper is
+// detected within interval+timeout and the connection is dropped so the next
+// operation re-spawns it.
+var (
+	helperPingInterval = 15 * time.Second
+	helperPingTimeout  = 5 * time.Second
+)
+
 // NewHelperSpawner returns the default spawner: pkexec running the bundled
 // omniproxy-helper. When helperPath is empty, OMNIPROXY_HELPER is tried; when
 // set, the helper is launched directly (no pkexec) so tests can exercise the
@@ -230,6 +238,7 @@ func dialHelper(socketPath string, logger *log.Logger) (*helperClient, error) {
 		pending: make(map[uint64]chan ServerMessage),
 	}
 	go c.readLoop()
+	go c.startPingLoop()
 	return c, nil
 }
 
@@ -321,6 +330,42 @@ func (c *helperClient) connect(opts engine.Options) error {
 	}
 	if !resp.OK {
 		return fmt.Errorf("privileged helper: %s", resp.Error)
+	}
+	return nil
+}
+
+// startPingLoop keeps the helper alive-detection active while the connection
+// is open. A ping that goes unanswered (helper wedged or unreachable) drops
+// the connection so subsequent operations re-spawn the helper instead of
+// hanging on request timeouts.
+func (c *helperClient) startPingLoop() {
+	t := time.NewTicker(helperPingInterval)
+	defer t.Stop()
+	for range t.C {
+		if !c.alive() {
+			return
+		}
+		if err := c.ping(); err != nil {
+			if c.logger != nil {
+				c.logger.Warnf("tunnel", "helper keepalive failed: %v", err)
+			}
+			_ = c.close(false)
+			return
+		}
+	}
+}
+
+func (c *helperClient) ping() error {
+	seq := c.nextSeq()
+	if err := c.send(ClientMessage{Type: "ping", Seq: seq}); err != nil {
+		return fmt.Errorf("privileged helper: %w", err)
+	}
+	resp, err := c.await(seq, helperPingTimeout)
+	if err != nil {
+		return fmt.Errorf("privileged helper: %w", err)
+	}
+	if !resp.OK {
+		return errors.New("privileged helper: ping rejected")
 	}
 	return nil
 }

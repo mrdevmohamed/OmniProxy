@@ -347,7 +347,7 @@ flowchart TD
 Notes:
 
 - Users never edit sing-box JSON; the visual builders and importers are the only source of profiles (AGENTS.md product rules).
-- TLS is on by default (`engine/config.go:420-434`); bypass is gated behind Advanced Mode (Phase 2) per PRD §9.
+- TLS is on by default (`engine/config.go:420-434`); bypass requires Advanced Mode and an explicit confirmation dialog per PRD §9 (`server_edit_screen.dart:333-354`).
 - `engine/config.go` validates the essentials (mode/address/port, `engine/config.go:264-275`); profile-level validation lives in `models` (`core/store/server_repository.go:105`).
 
 ---

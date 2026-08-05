@@ -321,7 +321,7 @@ Four `_Section` cards:
 
 Every control writes through `updateSettings`; nothing is saved locally in the UI (single source of truth = core, §4).
 
-**Advanced Mode gating:** `advancedModeEnabled` exists in `AppSettings` and the contract, but there is **no UI to toggle it** — Settings shows none of the Phase 2 surfaces (routing, chaining, TLS-bypass without warning), consistent with "Advanced Mode is opt-in and hidden from the default flow" (AGENTS.md). The allow-insecure toggle in the server form is the one place a security-relevant option is exposed, and it carries an explicit warning.
+**Advanced Mode gating:** `advancedModeEnabled` lives in `AppSettings` and the contract, and is now surfaced as a Settings → **Advanced** "Enable Advanced Mode" toggle (`settings_screen.dart:129-158`). Its one enforced effect today is gating the allow-insecure certificate bypass on the server form: the toggle is locked with a "Requires Advanced Mode" subtitle unless the mode is on, and enabling it shows an explicit "Disable certificate validation?" confirmation dialog (`server_edit_screen.dart:333-354`). The Phase 2 surfaces it will also gate (routing, chaining) are still hidden (`docs/implementation-plan.md:19`).
 
 **Platform-limitation surfacing:** the shared log screen and error banners are how limitations are *not* silently degraded. E.g. Windows helper/service model limitations are documented to surface in the UI when applicable (`docs/platform-notes.md:77`) — currently Windows runs the mock (§10), so nothing to surface yet.
 
@@ -393,7 +393,7 @@ Three test layers, each with a distinct role:
 - **`latencyTested` event unused** — defined and emitted but not subscribed; latency reaches the UI via full `_reload` refetch instead of the event. Phase 2 seam for live latency.
 - **No timeouts on `ApiClient` calls** (§9) — a hung core request hangs the UI (the FFI call blocks the isolate on Linux).
 - **`bytesUp`/`bytesDown` always 0**, `statusHistory`/`error` fields are populated but stats are Phase 2 (`docs/api-contract.md` §2.2).
-- **Advanced Mode / Phase 2 surfaces absent**: routing manager, tunnel chaining, Reality (reserved on the model, rejected by core until the engine supports it), QR import, stats — all out of MVP scope (`docs/implementation-plan.md:19`). `advancedModeEnabled` has no UI.
+- **Advanced Mode / Phase 2 surfaces absent**: routing manager, tunnel chaining, Reality (reserved on the model, rejected by core until the engine supports it), QR import, stats — all out of MVP scope (`docs/implementation-plan.md:19`). `advancedModeEnabled` now has a Settings toggle, and it gates the allow-insecure bypass (§7).
 - **`autoConnect` / `startWithSystem` / `notificationsEnabled`** are stored on `AppSettings` but have no behavior or UI (contract §2.3: "stored in MVP; behavior in later phase").
 - **No localization** (`lib/l10n/generated/` is empty) — all strings are hard-coded English.
 - **Mock is not a perfect contract oracle** — its validation covers a subset (name/address/port/SSH-user, `mock_api_client.dart:128-147`) and its persistence is in-memory (reset each launch).

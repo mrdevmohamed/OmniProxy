@@ -29,8 +29,8 @@ Product requirements are `PRD.md:253-259` (§9 Security Requirements) and `PRD.m
 | Credentials in OS-native secure storage, never plaintext files | `core/secret/store.go` `Store` (Get/Set/Delete), `core/secret/keyring.go` (go-keyring → Android Keystore / Windows Credential Manager / Linux Secret Service), `app/android/app/src/main/kotlin/com/omniproxy/omniproxy/KeystoreSecretStore.kt` | In-memory fallback exists for test environments only. |
 | Encrypt locally persisted sensitive config at rest | `core/config/engine.go` — settings blob sealed with AES-256-GCM (`core/secret/crypto.go:55-65`), persisted atomically at `0600` (`core/config/engine.go:63-89`) | See §5. |
 | Sound key management | Data key `omniproxy.atrest.key` stored in the OS secure store (`core/secret/crypto.go:12-13`); per-platform: `KeystoreSecretStore.kt` (Android), go-keyring (`keyring.go`) | See §6. |
-| Logs never contain credentials / keys / raw traffic | `core/log/redactor.go` masks registered secrets before any sink; `core/log/logger.go`; engine logs re-routed through the redacting core logger (`core/tunnel/runner.go` `engineLogSink`) | Exact-string, case-insensitive, min length 3; `Add` **replaces** rather than accumulates (`redactor.go:46`); coverage is incomplete — see §7. |
-| Cert validation on by default; bypass only in Advanced Mode with warning | Default `Insecure = false` (`app/lib/features/servers/server_edit_screen.dart:70`); toggle UI warns "Disables certificate validation — use only for testing." (`server_edit_screen.dart:459-463`) | Advanced Mode is currently not gated behind an opt-in screen — see §8. |
+| Logs never contain credentials / keys / raw traffic | `core/log/redactor.go` masks registered secrets before any sink; `core/log/logger.go`; engine logs re-routed through the redacting core logger (`core/tunnel/runner.go` `engineLogSink`) | Exact-string, case-insensitive, min length 3; registration is **additive** (a union of every `Add` call); coverage is incomplete — see §7. |
+| Cert validation on by default; bypass only in Advanced Mode with warning | Default `Insecure = false` (`app/lib/features/servers/server_edit_screen.dart:70`); toggle hidden behind an **Advanced Mode** opt-in and gated with an explicit warning dialog (`server_edit_screen.dart:333-354,458-466`; `settings_screen.dart:129-158`) | Done — see §8. |
 | Identical feature set; platform limits surfaced, never silently degraded | Helper launch failure maps to `unauthorized` with actionable UI text (`docs/platform-notes.md:66`, `docs/api-contract.md:161`) | — |
 | SQLite never stores credentials | `core/store/server_repository.go` — credential columns hold empty strings; refs live in `secret_refs`, values in SecretStore | See §5. |
 
@@ -84,7 +84,7 @@ Trust boundaries, in increasing trust:
 
 1. **App process ⇄ OS secure storage.** Crosses only via the platform keyring/Keystore API. No plaintext persists here.
 2. **App process ⇄ disk.** Sealed blob (`core/config/engine.go`), credential-free SQLite (`core/store/server_repository.go`).
-3. **Unprivileged core ⇄ root helper (Linux VPN).** Crossed over a `0600` Unix socket; authentication to root is delegated entirely to pkexec (`docs/LOW_LEVEL.md:270-271`). This boundary currently carries credentials in plaintext and has an unresolved socket-ownership wrinkle — §9 and §13.
+3. **Unprivileged core ⇄ root helper (Linux VPN).** Crossed over a `0600` Unix socket owned by the invoking user; the helper `chown`s the socket to the pkexec caller and verifies the peer via `SO_PEERCRED` (§9). The boundary carries credentials in plaintext (documented) and the client pings the helper to detect hangs — §9 and §13.
 
 ## 4. Credential lifecycle
 
@@ -134,7 +134,7 @@ Notes:
 
 ## 7. Logging & redaction
 
-- **Design:** `Redactor` (`core/log/redactor.go`) replaces registered secrets with `[REDACTED]` before any sink or subscriber sees the message (`redactor.go:9-17`). Registration is case-insensitive and skips secrets shorter than 3 chars to avoid mangling common words (`redactor.go:24-47`). Note: despite the doc comment saying "additive", `Add` actually **replaces** the compiled pattern with only that call's secrets (`redactor.go:46`) — the effective pattern is the last registration, not the union (`docs/GO_RUNTIME.md:378-380`; `docs/DEBUGGING.md:118-130`). Re-registration on each `Get`/`List` (`core/store/server_repository.go:283-287`) means multi-server `listServers` can leave earlier servers' credentials unredacted — a P1 log-hygiene risk.
+- **Design:** `Redactor` (`core/log/redactor.go`) replaces registered secrets with `[REDACTED]` before any sink or subscriber sees the message (`redactor.go:9-17`). Registration is case-insensitive, skips secrets shorter than 3 chars to avoid mangling common words (`redactor.go:24-47`), and is **additive**: each `Add` folds new secrets into a master pattern so nothing registered earlier stops being masked (`redactor.go:25-47`, `compile` at `:60-70`). Re-registration on each `Get`/`List` is therefore harmless (`core/store/server_repository.go:283-287`).
 - **Coverage:** only *explicitly registered* strings are masked; registration happens where credentials enter the system (server repository/manager). Known gaps: Reality keys, SSH host key, and WS Host/path are not registered — see `docs/LOW_LEVEL.md:569` (High).
 - **Log pipeline:** core logs pass through the redacting logger (`core/log/logger.go`); engine (sing-box) logs are routed through the core logger via `engineLogSink` in `core/tunnel/runner.go`, and helper log lines arrive over the socket already destined for the redacting logger (`core/tunnel/helper_client.go:249-253`). `models/log.go` `LogEntry` is redacted upstream, so UI log screens never show raw secrets.
 - **Contract rule:** `docs/api-contract.md:205` — "Never log request/response payloads containing credential fields."
@@ -144,22 +144,22 @@ Notes:
 
 - **Model:** `TLSSettings{ServerName, Insecure, ALPN, Fingerprint}` (`engine/config.go:54-59`), mapped to sing-box `tls` outbound options (`engine/config.go:420-431`). `Fingerprint` drives uTLS (`config.go:430-431`).
 - **Default:** `Insecure` defaults to `false` in the UI (`app/lib/features/servers/server_edit_screen.dart:70`), and certificate validation is on unless the user flips the toggle.
-- **Bypass path:** a SwitchListTile "Allow insecure certificates" with the subtitle "Disables certificate validation — use only for testing." (`server_edit_screen.dart:459-463`). PRD requires cert bypass only in Advanced Mode with an explicit user-visible warning (`PRD.md:311`, `AGENTS.md`). **Gap:** Advanced Mode is not yet an opt-in gate, and the toggle is currently reachable from the ordinary edit form — the warning text exists but there is no elevated-mode requirement around it. Flag for Phase 2/hardening.
+- **Bypass path:** a SwitchListTile "Allow insecure certificates" in the TLS section (`server_edit_screen.dart:458-466`). PRD requires cert bypass only in Advanced Mode with an explicit user-visible warning (`PRD.md:311`, `AGENTS.md`). **Implemented:** the toggle is **locked when Advanced Mode is off** (subtitle "Requires Advanced Mode"), and enabling it in Advanced Mode shows a confirmation dialog spelling out the MITM risk before it takes effect (`server_edit_screen.dart:333-354`). Advanced Mode itself is an opt-in Settings toggle (`settings_screen.dart:129-158`).
 - **ServerName:** derived from the profile's host; no automatic override. Reality is parsed in the model space but is not registered as a supported protocol (`engine/registry.go`; `docs/implementation-plan.md` M9 rejects reality links) — relevant because Reality keys would otherwise sit in the redaction gap (§7).
 
 ## 9. Privileged helper attack surface (Linux VPN mode)
 
 The helper exists for exactly one reason: VPN mode needs `CAP_NET_ADMIN`, and the app process must not hold it (`docs/LINUX.md:14`). It is spawned via `pkexec omniproxy-helper --socket <path>` (`core/tunnel/helper_client.go:41-58`); authentication to root is delegated entirely to pkexec (`docs/LINUX.md:336`).
 
-Socket setup (`core/tunnel/helperhost/helperhost.go:24-65`): `MkdirAll(dir, 0o700)` (25) → `os.Remove` (28) → `Listen` (29) → `Chmod 0600` (34) → single `Accept` (38) → newline-delimited JSON loop (45-63); `quit` or EOF calls `StopEngine()` so no orphaned root-owned TUN survives (58-63; intent at 20-23). `Host` serializes engine state with a mutex and socket writes with a separate `wmu`, and double-checks `eng == nil` to reject a second tunnel mid-start (`helperhost.go:69-73,90-115`).
+Socket setup (`core/tunnel/helperhost/helperhost.go:24-65`): `MkdirAll(dir, 0o700)` (25) → `os.Remove` (28) → `Listen` (29) → when spawned via pkexec, `chown` the socket + dir to the invoking user (`PKEXEC_UID`) (32-38) → `Chmod 0600` (41) → single `Accept` (44) → `SO_PEERCRED` check that the peer uid matches the invoker (48-52) → newline-delimited JSON loop (59-77); `quit` or EOF calls `StopEngine()` so no orphaned root-owned TUN survives (72-77; intent at 20-23). `Host` serializes engine state with a mutex and socket writes with a separate `wmu`, and double-checks `eng == nil` to reject a second tunnel mid-start (`helperhost.go:83-87,104-129`).
 
-Client side (`core/tunnel/helper_client.go`): dial-first reuses a leftover helper from a previous run (175-180); timeouts are spawn 15 s / connect 30 s / disconnect 5 s (31-35); requests are seq-correlated through a `pending` map and `readLoop` fails all waiters on socket close (216, 291-311).
+Client side (`core/tunnel/helper_client.go`): dial-first reuses a leftover helper from a previous run (175-180); timeouts are spawn 15 s / connect 30 s / disconnect 5 s (31-35); requests are seq-correlated through a `pending` map and `readLoop` fails all waiters on socket close (216, 291-311). A keepalive goroutine `ping`s the helper every 15 s (5 s timeout) and drops the connection when the helper stops answering, so a hung helper is detected within ~20 s instead of only at the next request (`helper_client.go:36-42,335-378`).
 
 **Vulnerabilities / weaknesses (each already documented in `docs/LOW_LEVEL.md` §10–§11):**
 
-1. **Crit — socket-ownership wrinkle / no peer auth.** The helper runs as root, so the `0600` socket inode is root-owned; `connect(2)` needs write permission on the socket file, so the *unprivileged* core may not be able to connect at all. There is no `SO_PEERCRED` check and no `chown` back to the caller (`docs/LOW_LEVEL.md:287-319,567`; `docs/LINUX.md:448`). If it does connect, **any same-user process can** — there is no token/authz beyond the socket mode. *Must be verified on a real pkexec run before release.*
+1. **Resolved — socket-ownership wrinkle / no peer auth.** The helper now `chown`s the `0600` socket (and its parent dir) to the pkexec invoking user (`helperhost.go:32-38`, via `PKEXEC_UID`) and rejects any connecting peer whose uid differs (`SO_PEERCRED`, `helperhost.go:48-52`). Still *verify on a real pkexec run before release*. Residual: any **same-uid** process can connect — Unix socket auth cannot distinguish same-user processes without an additional token (§13.1).
 2. **High — credentials cross the socket in plaintext.** `ClientMessage.Options` is the full `engine.Options` including password / UUID / SSH key (`helperproto.go:15-19`, `engine/config.go` outbound fields; `docs/LOW_LEVEL.md:315-319,568`). This is an explicit root-level trust boundary; nothing redacts the wire.
-3. **Med — no keepalive ping.** A hung helper is only detected via request timeouts (`docs/LOW_LEVEL.md:570`).
+3. **Resolved — no keepalive ping.** The client pings every 15 s and drops the connection on a missed answer, so a hung helper surfaces within ~20 s (`helper_client.go:36-42,335-378`; `docs/LOW_LEVEL.md:570`).
 4. **Med — helper death while connected isn't pushed to the UI state machine** (`docs/LOW_LEVEL.md:571`).
 5. **Low — TOCTOU.** `Remove`-then-`Listen` and `Chmod` after `Listen` (a socket briefly exists with the process umask; a stale `Remove` could unlink a live socket of a previous helper) (`docs/LOW_LEVEL.md:309-314,576`). Parent dir is `0700` user-owned, limiting blast radius.
 6. **Low — `/tmp` fallback.** If `XDG_RUNTIME_DIR` is unset the socket falls back to `/tmp/omniproxy/helper.sock` (`helper_proto.go:25-35`); the `0700` parent mitigates but the location is weaker (`docs/LOW_LEVEL.md:247-249`).
@@ -195,12 +195,12 @@ Ordered by impact. Items 1–3 are already the top rows of `docs/LOW_LEVEL.md:56
 
 | # | Severity | Action | References |
 |---|---|---|---|
-| 1 | **Crit** | Resolve the socket-ownership wrinkle: verify on a real pkexec run; `chown` the socket to the caller's UID (via `SO_PEERCRED` before close) or move to an authenticated client (token over the socket). Without this, Linux VPN mode is either broken or open to any same-user process. | helperhost.go:34; LINUX.md:448; LOW_LEVEL.md:567 |
+| 1 | ~~Crit~~ **Done** | ~~Resolve the socket-ownership wrinkle~~ — helper now `chown`s the socket to the pkexec caller and verifies the peer via `SO_PEERCRED`. Remaining: verify on a real pkexec run; a same-uid token if same-user processes must be distinguished. | helperhost.go:32-52; LINUX.md:448; LOW_LEVEL.md:567 |
 | 2 | **High** | Stop sending credentials in the clear over the helper socket: encrypt `engine.Options` or send only SecretStore refs and let the helper fetch them. At minimum, document the boundary (done: §9.2). | helperproto.go:18; LOW_LEVEL.md:568 |
 | 3 | **High** | Complete redaction coverage: register Reality keys, SSH host key, WS Host/path, and every credential-bearing field; add a per-protocol redaction test with a full profile round-trip. | redactor.go:25-47; LOW_LEVEL.md:569 |
-| 4 | **High** | Gate the "Allow insecure certificates" toggle behind Advanced Mode with an explicit opt-in warning (PRD: cert bypass only in Advanced Mode). | PRD.md:311; server_edit_screen.dart:459-463 |
+| 4 | ~~High~~ **Done** | ~~Gate the "Allow insecure certificates" toggle behind Advanced Mode with an explicit opt-in warning~~ — toggle locked outside Advanced Mode; confirmation dialog on enable (`server_edit_screen.dart:333-354,458-466`). | PRD.md:311; server_edit_screen.dart:333-354 |
 | 5 | **High** | Protect exports: support an optional password/encryption on `.onnproxy` exports, and warn before placing plaintext links on the clipboard. | exchange.go; linkgen.go; servers_screen.dart:752-768 |
-| 6 | **Med** | Add periodic `ping` keepalive and push helper death into `vpn.Service` (auto-reconnect/`error`). | LOW_LEVEL.md:570-571 |
+| 6 | **Med** | ~~Add periodic `ping` keepalive~~ (done: `helper_client.go:36-42,335-378`). Remaining: push helper death into `vpn.Service` (auto-reconnect/`error`) — a socket close while connected still isn't surfaced to the UI state machine. | LOW_LEVEL.md:570-571 |
 | 7 | **Med** | Preserve a corrupt data key as a backup before deleting/regenerating it; log the recovery. | crypto.go:39; engine.go:232-246; LOW_LEVEL.md:575 |
 | 8 | **Med** | Timeout/retry the Secret Service Set to avoid blocking connect/save on a stalled D-Bus. | crypto.go:49; LOW_LEVEL.md:574 |
 | 9 | **Low** | Fix socket TOCTOU: `fchmod` before `Listen`; confirm staleness before `Remove`; fsync the parent dir after `Rename`. | helperhost.go:28-34; LOW_LEVEL.md:576 |
@@ -211,7 +211,7 @@ Ordered by impact. Items 1–3 are already the top rows of `docs/LOW_LEVEL.md:56
 ## 14. Related documents
 
 - `docs/LOW_LEVEL.md` — §5 (socket & privilege handling), §9 (log redaction pipeline), §10–§11 (known gaps and the prioritized risk table).
-- `docs/LINUX.md` — helper architecture, §5 (process deep-dive), §6 (socket protocol), §10 (known gaps incl. the socket-ownership wrinkle).
+- `docs/LINUX.md` — helper architecture, §5 (process deep-dive), §6 (socket protocol), §10 (known gaps; the socket-ownership item is resolved).
 - `docs/SINGBOX.md` — engine embedding, §10 (known gaps incl. the GPLv3 open decision).
 - `docs/VPN_INTERNALS.md` — TUN per platform, §8 (Linux helper), §10 (security/isolation).
 - `docs/ANDROID.md`, `docs/WINDOWS.md` — platform layers and permission models (Keystore, Credential Manager/DPAPI, VpnService, Wintun).

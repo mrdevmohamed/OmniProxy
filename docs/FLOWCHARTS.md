@@ -253,20 +253,19 @@ exactly the codes in `docs/api-contract.md`.
 ## 7. Log redaction pipeline
 
 All log lines are redacted *before* they reach any sink — console, event ring, or file.
-Secrets are registered with `Redactor.Add` (`core/log/redactor.go:25-47`): each call trims,
-drops secrets shorter than 3 characters, lower-case-dedupes, and compiles ONE
-case-insensitive regex from **that call's** secrets. Note: despite the doc comment saying
-"additive", `Add` **replaces** `r.re` — the effective pattern is the last registration, not
-the union (`GO_RUNTIME.md:378-380`). `Redact` then substitutes every match with
-`[REDACTED]` (`redactor.go:50-54`).
+Secrets are registered with `Redactor.Add` (`core/log/redactor.go:25-70`): each call trims,
+drops secrets shorter than 3 characters, and folds them into a master map that is compiled
+into ONE case-insensitive union regex. Registration is **additive** — later `Add`s extend,
+never replace, the pattern (`redactor.go:25-70`, `TestRedactorIsAdditive`). `Redact` then
+substitutes every match with `[REDACTED]` (`redactor.go:50-54`).
 
 ```mermaid
 flowchart TD
     A(["secret value restored / saved<br/>Get or List: server_repository.go:283<br/>updateSettings: config/engine.go:284"]) --> B["Redactor.Add(secrets)<br/>redactor.go:25"]
     B --> C{"secret < 3 chars?"}
     C -- yes --> D["dropped (never registered)<br/>redactor.go:33"]
-    C -- no --> E["compiled into (?i) alternation<br/>r.re = pattern (REPLACES, not additive)<br/>redactor.go:46"]
-    D --> Z(["registration set (last call wins)"])
+    C -- no --> E["folded into master map<br/>r.re = union of all Add calls (additive)<br/>redactor.go:25-70"]
+    D --> Z(["registration set (union — additive)"])
     E --> Z
     Z --> F(["log source: core services + engine"])
     F --> G{"engine message?"}
@@ -281,10 +280,11 @@ flowchart TD
 **Why.** Credentials must never appear in logs (PRD), so redaction sits at the source
 boundary — `Logger.Log` redacts before any sink or subscriber sees the message, and the
 engine log adapter routes *every* sing-box message through it. The `< 3`-char carve-out
-keeps common words (a `p` flag, a port) from being mangled. **Known limitation:** because
-`Add` replaces instead of accumulating, after a multi-server `listServers` only the *last*
-profile's credentials are masked — flagged as P1 in `GO_RUNTIME.md:378-380` and
-`DEBUGGING.md:118-130`; do not "fix" by relying on additive behavior today.
+keeps common words (a `p` flag, a port) from being mangled. **Known limitation:** the
+*replace-instead-of-accumulate* bug is fixed — registration is now a master union pattern
+(`GO_RUNTIME.md:378-380`, `DEBUGGING.md:118-130`, `TestRedactorIsAdditive`) — but
+*coverage* is incomplete: not every credential-bearing field is registered (Reality keys,
+SSH host key, WS Host/path; `LOW_LEVEL.md:569`).
 
 ---
 

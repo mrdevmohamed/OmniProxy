@@ -117,12 +117,11 @@ State changes and log lines reach the UI asynchronously:
 
 - Registered secrets are replaced with `[REDACTED]` before any sink
   (`core/log/redactor.go:9,49-54`).
-- Registration is **case-insensitive** but **not additive**: `Redactor.Add` replaces the
-  compiled pattern with only the secrets from *that call* (`core/log/redactor.go:25-47`),
-  and `SQLiteServerRepository.registerRedact` re-adds each profile's credentials on every
-  `Get`/`List` (`core/store/server_repository.go:283-287`). Effect: after a multi-server
-  `listServers`, the redaction pattern is the *last* profile processed, not the union —
-  a real log-hygiene risk tracked in §10.3.
+- Registration is **case-insensitive** and **additive**: each `Redactor.Add` folds its
+  secrets into a master pattern (`core/log/redactor.go:25-47`, `compile` at `:60-70`), so
+  `SQLiteServerRepository.registerRedact` re-adding credentials per `Get`/`List`
+  (`core/store/server_repository.go:283-287`) is harmless — every registered secret stays
+  masked. Covered by `TestRedactorIsAdditive`.
 - Secrets **shorter than 3 characters are ignored** (`core/log/redactor.go:31-35`) to
   avoid mangling words.
 
@@ -440,19 +439,18 @@ repro, set `OMNIPROXY_HELPER` to a wrapper so the core spawns your binary instea
 `pkexec` (spawner override in `core/tunnel/helper_client.go:31-58`) — avoids the polkit
 prompt in tests.
 
-### 6.4 Known wrinkle: socket ownership
+### 6.4 Socket ownership (fixed)
 
-The helper runs as root, so the socket inode is **root-owned**; a `0600` socket is only
-connectable by its owner. No `SO_PEERCRED` check and no `chown` back to the caller
-exists (`docs/LINUX.md:448`; `docs/LOW_LEVEL.md:287-319`; `docs/SECURITY.md:160,198`).
-Symptoms:
+The helper runs as root via pkexec; it now `chown`s the socket (and its parent dir) to
+the invoking user (`PKEXEC_UID`) and verifies the connecting peer via `SO_PEERCRED`
+before serving (`core/tunnel/helperhost/helperhost.go:30-52`). The `0600` mode then
+correctly means "only the invoking user's core can connect". Historical symptom (pre-fix):
 
 - `dial unix ... permission denied` from the core when connecting in VPN mode.
-- The unit tests do **not** reproduce this (unprivileged↔unprivileged,
-  `core/tunnel/helperhost_test.go:16-20`), so a green suite is not proof.
 
-If you hit it, the fixes are flagged in `docs/LOW_LEVEL.md:567`: `chown` to the caller's
-uid obtained via `SO_PEERCRED`, or move to an authenticated client.
+Still **verify on a real pkexec run before release** — the unit tests exercise
+unprivileged↔unprivileged (`core/tunnel/helperhost_test.go:16-20`) and set no
+`PKEXEC_UID`, so they cover the default (direct-spawn) path, not the chown/peer path.
 
 ### 6.5 Helper gotchas
 
@@ -464,10 +462,10 @@ uid obtained via `SO_PEERCRED`, or move to an authenticated client.
 - **Engine log lines** arrive as `HelperLogEvent` and are re-logged under component
   `engine` — a helper-side error (e.g. "outbound type not found") shows up in the app's
   logs and `getLogs`, not only in the helper's stderr.
-- **No keepalive:** the wire protocol defines `ping` and the host handles it
-  (`helperproto.go:16`; `helperhost.go:56`), but the client **never sends one**
-  (`core/tunnel/helper_client.go` — full file read: only connect/disconnect/quit).
-  A wedged helper is therefore only detected when a request times out. §10.5.
+- **Keepalive ping:** the client pings every 15 s (5 s timeout) and drops the
+  connection when the helper stops answering (`core/tunnel/helper_client.go:36-42,
+  335-378`), so a wedged helper is detected within ~20 s instead of at the next request.
+  A dropped connection makes the next operation re-spawn the helper. §10.5.
 
 ---
 
@@ -593,16 +591,16 @@ platform's core feature, **P1** major, **P2** minor/UX.
 |---|---|---|---|---|
 | 1 | ~~Connecting to a trojan server: engine error~~ | **RESOLVED** — trojan outbound was not registered in the engine registry (M9 added the model + builder, not the registration); now registered | Model + builder + tests: `core/models/server.go:22,30-38`, `engine/config.go:29,352-361`, `engine/engine_test.go:376-396`; registration at `engine/registry.go:49`; regression test `TestEngineStartTrojan` (`engine/engine_test.go:497-516`) reproduces the old `outbound type not found: trojan` failure without the registration | Fixed in `engine/registry.go` (import `protocol/trojan` + `outbound.Register` for `C.TypeTrojan`) |
 | 2 | Windows app never actually connects; UI behaves but no VPN | Windows bridge is a stub that throws, and the factory silently falls back to `MockApiClient` | `app/lib/core/bridge/bridge_windows.dart:10,15` `UnsupportedError('WindowsBridge lands in M8')`; `app/lib/core/client_factory.dart:20-28` (Android→Linux→Mock); mock seeds fake servers (`mock_api_client.dart:41-51`) | **P0.** Implement the FFI transport (or wire `dart:ffi` into `omniproxy.dll`); do not ship the mock fallback. Cross-compile via `make windows-core` (`Makefile:128-137`) |
-| 3 | Linux VPN: `permission denied` dialing the helper socket | Root-owned 0600 socket not connectable by unprivileged core | `helperhost.go:34` `Chmod(0600)` as root; no `SO_PEERCRED`/`chown`; `docs/LINUX.md:448`, `docs/SECURITY.md:160` | **P1.** Verify on a real pkexec run, then `chown` via `SO_PEERCRED` or authenticated client (`docs/LOW_LEVEL.md:567`) |
+| 3 | ~~Linux VPN: `permission denied` dialing the helper socket~~ | **RESOLVED** — helper now `chown`s the socket to the pkexec caller and checks `SO_PEERCRED` | `helperhost.go:30-52` (`chownSocket`/`peerUID`, `PKEXEC_UID`); `core/tunnel/helperhost/helperhost_internal_test.go` | Fixed; still verify on a real pkexec run (§6.4) |
 | 4 | VPN connect fails with `unauthorized` | Helper spawn/auth issue — `classify` maps helper errors to `unauthorized` | `core/vpn/service.go:513-526`; pkexec spawn at `helper_client.go:31-58` | **P1.** Check pkexec prompt; run helper directly (§6.3); verify socket perms (§6.4) |
 | 5 | `connect` returns ok but state stays Reconnecting and flips to Error repeatedly | Failed start retried with backoff until cap (max 5) | `service.go:42-58,268-321,323-333` | Inspect the last `stateChanged`/`vpn` log for the underlying engine error; fix that; if transient, it self-recovers |
-| 6 | A credential/UUID appears in logs | Redaction missed it: pattern is **not additive** (only last call's secrets) and secrets <3 chars are ignored | `redactor.go:25-47` (replaces `r.re`), `redactor.go:31-35`; re-registration per `Get`/`List` at `server_repository.go:283-287`; finding in `docs/GO_RUNTIME.md:380` | **P1.** Accumulate a master pattern (union) in `Redactor.Add`; consider dropping the <3-char carve-out for known secret fields |
+| 6 | A credential/UUID appears in logs | Redaction missed it: secrets <3 chars are ignored (carve-out for common words); coverage is incomplete for non-credential fields (Reality keys, SSH host key, WS Host/path) | `redactor.go:31-35`; `server_repository.go:283-287`; coverage gap in `docs/LOW_LEVEL.md:569` | **P2.** Additive-union fix is **done** (`redactor.go:25-70`, `TestRedactorIsAdditive`); remaining: register every credential-bearing field + per-protocol round-trip redaction tests |
 | 7 | App crash instead of an error from the bridge | No panic recovery across FFI | `core/glue/glue.go` (no `recover`); `docs/FLUTTER_GO_FFI.md:706-713,753-754` | **P2.** Wrap exported functions in `defer recover()` returning an `internal` error envelope |
 | 8 | Events missing after a burst (UI briefly stale) | Ring cap 512 drops oldest silently | `core/internal/ring/ring.go` (drop-oldest on overflow); `docs/GO_RUNTIME.md:282` | **P2.** By design; consider raising the cap or draining on subscription |
 | 9 | After restart, settings appear reset / "config corrupted" | OS keyring unavailable → in-memory fallback → at-rest key regenerated, old blob unreadable | `core/secret/keyring.go:16-20`, `core/secret/store.go`, `crypto.go` key regen path | **P2.** Verify keyring service availability (`secret-tool` on Linux); report not as data loss but as fallback behavior |
 | 10 | Android VPN: connect stuck "Connecting" after granting consent | Consent flow pending result never completed, or fd not yet valid | `Bridge.kt:45-48` (pendingConnect), `OmniProxyVpnService.kt:31-39`; `engine/platform_fd.go:173-175` (`tun fd not set`) | **P1.** Ensure `setTunFd`/`syncDefaultInterface` run before `establish()`; check `adb shell dumpsys activity services` |
 | 11 | Android: engine nil-derefs at Start | Passive default-interface monitor not fed before engine start (netlink banned) | `platform_fd.go:100-121`; `Bridge.kt:81-110`; `docs/implementation-plan.md:97` | **P1.** `Bridge.syncDefaultInterface()` before `establish()`; keep the monitor fed on network change |
-| 12 | TLS: certificate errors despite "Allow insecure certificates" | `Insecure` is only wired when TLS is enabled and profile has TLS configured; Advanced-Mode gating for bypass isn't built yet | `core/tunnel/options.go:103-113` (`tlsIfEnabled`), `engine/config.go:420-434`; UI toggle `app/lib/features/servers/server_edit_screen.dart:458-466`; gap in `docs/SECURITY.md:146-147` | **P2.** Confirm TLS.Enabled on the profile; the toggle only takes effect for TLS-capable protocols. Phase-2: gate bypass behind Advanced Mode |
+| 12 | TLS: certificate errors despite "Allow insecure certificates" | `Insecure` is only wired when TLS is enabled and profile has TLS configured; bypass now gated behind Advanced Mode (locked toggle + warning dialog) | `core/tunnel/options.go:103-113` (`tlsIfEnabled`), `engine/config.go:420-434`; UI toggle `app/lib/features/servers/server_edit_screen.dart:333-354,458-466`; gating done per `docs/SECURITY.md:146-147` | **P2.** Confirm TLS.Enabled on the profile; the toggle only takes effect for TLS-capable protocols. The Advanced-Mode gate is now built |
 | 13 | Proxy mode works, VPN mode doesn't (Linux) | Engine running in the wrong process — proxy runs in-process, VPN must use the helper | `core/tunnel/helper_client.go:60-96` (mode-aware runner) | **P2.** Mode mismatch surfaces as helper/privilege errors; verify the runner is `NewHelperAwareRunner` (`glue.go:92`) |
 | 14 | Repeated connects leak fds | TUN fd dup per `OpenInterface` not balanced | `engine/platform_fd.go:167-190` (`unix.Dup`); helper single-accept reaping at `helper_client.go:126-159` | **P2.** Watch `ulimit -n`/`ls /proc/<pid>/fd`; ensure each Start is paired with Close |
 | 15 | Linux helper left a TUN behind | Crash between engine start and teardown | `helperhost.go:58-63` (EOF/quit → StopEngine) | **P2.** `sudo ip link del omniproxy`; root-cause the crash in the helper's stderr |
@@ -620,9 +618,9 @@ platform's core feature today.
 |---|---|---|---|
 | ~~**P0**~~ | ~~**Trojan outbound not registered**~~ — **RESOLVED**: registration added to `engine/registry.go`; guarded by `TestEngineStartTrojan` | `engine/registry.go:49`; `engine_test.go:497-516`; config builder `engine/config.go:352-361`; model `core/models/server.go:22,30-38` | §9 row 1 (resolved) |
 | **P0** | **Windows is a stub** with silent `MockApiClient` fallback | `bridge_windows.dart:10,15`; `client_factory.dart:20-28` | §9 row 2; `docs/WINDOWS.md` |
-| **P1** | **Helper socket ownership wrinkle** — root-owned 0600 socket may be unconnectable; no peer auth | `helperhost.go:34`; `docs/LINUX.md:448`; `docs/LOW_LEVEL.md:287-319,567`; `docs/SECURITY.md:160,198` | §6.4; §9 row 3 |
-| **P1** | **Redaction not additive** — pattern replaced per call, last `Get`/`List` wins; <3-char secrets ignored | `redactor.go:25-47,31-35`; `server_repository.go:283-287`; `docs/GO_RUNTIME.md:380` | §2.4; §9 row 6 |
-| **P1** | **No client keepalive** — wire supports `ping` (`helperproto.go:16`, handled at `helperhost.go:56`) but the client never sends it; wedged helper detected only via request timeouts | `core/tunnel/helper_client.go` (no ping path; timeouts 30 s/5 s) | §6.5 |
+| ~~**P1**~~ | ~~**Helper socket ownership wrinkle**~~ — **RESOLVED**: helper `chown`s the socket to the pkexec caller + `SO_PEERCRED` check; verify on a real pkexec run | `helperhost.go:30-52`; `docs/LINUX.md:448`; `docs/SECURITY.md:160,198` | §6.4; §9 row 3 (resolved) |
+| ~~**P1**~~ | ~~**Redaction not additive**~~ — **RESOLVED**: `Redactor.Add` folds into a master union pattern | `redactor.go:25-70`; `TestRedactorIsAdditive`; `server_repository.go:283-287`; `docs/GO_RUNTIME.md:380` | §2.4; §9 row 6 (resolved) |
+| ~~**P1**~~ | ~~**No client keepalive**~~ — **RESOLVED**: client pings every 15 s (5 s timeout) and drops a hung helper's connection | `helper_client.go:36-42,335-378`; `TestHelperClientSendsKeepalivePing`, `TestHelperClientDetectsWedgedHelper` | §6.5 |
 | **P1** | **Credential plaintext over the helper socket** — `ClientMessage.Options` carries full engine options incl. password/UUID/SSH key; root-level trust boundary, nothing redacts the wire | `helperproto.go:15-19`; `engine/config.go` outbound fields; `docs/SECURITY.md:161,43-44` | §6.5; `docs/LOW_LEVEL.md:568` |
 | **P2** | **No panic recovery across FFI** — a Go panic in an exported function crashes the app | `core/glue/glue.go`; `docs/FLUTTER_GO_FFI.md:706-713,753-754` | §4.4; §9 row 7 |
 | **P2** | **No Dart-side request timeout** — a hung FFI request stalls the isolate indefinitely | `bridge_linux.dart:85-120` | §4.3 item 6; `docs/GO_RUNTIME.md:265,372` |
@@ -632,7 +630,7 @@ platform's core feature today.
 | **P2** | **Stale socket / TOCTOU** — `Remove`-then-`Listen` + `Chmod` after `Listen`; stale `Remove` could unlink a live socket | `helperhost.go:24-34`; `docs/LOW_LEVEL.md:309-314,576` | §6.5 |
 | **P2** | **Keyring-unavailable fallback is silent** — in-memory SecretStore loses the at-rest key across restarts | `core/secret/store.go`; `keyring.go:16-20` | §5.6; §9 row 9 |
 | **P2** | **`tools/README.md` stale helper description** — says helper is "created via sing-tun; fd passed over Unix socket"; actually the helper hosts the engine and creates the TUN in-process; fd-passing is Android-only | `tools/README.md` vs `helperhost.go:90-115`, `docs/platform-notes.md:63` | §6.1 |
-| **P2** | **Allow-insecure not gated by Advanced Mode** — toggle reachable from the normal edit form (warning text present, no elevated-mode requirement) | `server_edit_screen.dart:458-466`; `docs/SECURITY.md:146-147`; `docs/PROXY_ARCHITECTURE.md:271` | §9 row 12 |
+| ~~**P2**~~ | ~~**Allow-insecure not gated by Advanced Mode**~~ — **RESOLVED**: toggle locked outside Advanced Mode; warning dialog on enable | `server_edit_screen.dart:333-354,458-466`; `docs/SECURITY.md:146-147`; `docs/PROXY_ARCHITECTURE.md:271` | §9 row 12 (resolved) |
 | **P2** | **`EngineVersion` bump discipline** — engine pinned v1.13.15; upgrades break config (e.g. `sniff` dropped in 1.13.0) | `core/core.go:30`; `docs/implementation-plan.md:97` | §9 row 17 |
 
 ---
@@ -645,7 +643,7 @@ platform's core feature today.
 | `docs/implementation-plan.md` | Milestones 1–9, confirmed decisions, build/test/lint commands (`:115-133`); the "what was decided and why" source |
 | `docs/api-contract.md` | Canonical bridge contract — method names, envelope, error codes, states; implement/debug every transport against this |
 | `docs/platform-notes.md` | Per-platform TUN/privileges/limitations; Linux helper architecture (`:63`), Android VpnProxyService model, logging rules |
-| `docs/LINUX.md` | Linux deep dive: helper process, socket protocol, §10 known gaps incl. the ownership wrinkle (`:448`) |
+| `docs/LINUX.md` | Linux deep dive: helper process, socket protocol, §10 known gaps (socket-ownership item resolved; `:448`) |
 | `docs/ANDROID.md` | Android deep dive: gomobile bind, MethodChannel host, consent flow, netlink ban, logcat usage |
 | `docs/WINDOWS.md` | Windows (code-complete, untested on Linux host); cross-compile + Wintun |
 | `docs/FLUTTER_GO_FFI.md` | FFI internals: ABI, allocation/ownership table (`:555-572`), polled-events rationale, no-recover finding (`:753-754`) |

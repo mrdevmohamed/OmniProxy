@@ -104,13 +104,13 @@ Server profiles are persisted in a local SQLite database (`omniproxy.db`, schema
 - Credentials only in OS-native secure storage: Android Keystore, Windows DPAPI, Linux Secret Service (libsecret) via `SecretStore` interface.
 - Config at rest encrypted (AES-256-GCM) under a data key held by `SecretStore`.
 - Logs redact credentials/keys/raw traffic; never logged.
-- Certificate validation on by default; bypass only behind explicit warnings (Advanced Mode — Phase 2).
+- Certificate validation on by default; bypass only behind explicit warnings (Advanced Mode). *Implemented in the MVP hardening pass:* the allow-insecure toggle is locked unless Advanced Mode is enabled and requires a confirmation dialog (`app/lib/features/servers/server_edit_screen.dart:333-354`; `app/lib/features/settings/settings_screen.dart:129-158`).
 
 ## 7. Phase 2/3 seams (TODO stubs only)
 
 - `TunnelNode` / `TunnelChain` / `RoutingRule` model slots reserved in `api/` and `models/`.
 - Tunnel Manager exposes a chain-construction seam (only the single-server path is implemented).
-- Stats/monitoring hooks on `VPNSession`; Advanced Mode UI gated off.
+- Stats/monitoring hooks on `VPNSession`; routing/tunnel-builder surfaces gated by Advanced Mode (the Advanced toggle itself now exists and gates the cert bypass, §6).
 
 ## 8. Build / test / lint commands
 
