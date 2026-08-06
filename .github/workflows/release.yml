@@ -126,7 +126,7 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # softprops/action-gh-release@v3.0.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # softprops/action-gh-release@v3.0.2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: omniproxy ${{ inputs.tag || github.ref_name }}

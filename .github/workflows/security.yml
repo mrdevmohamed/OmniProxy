@@ -120,7 +120,7 @@ jobs:
         run: gitleaks git --no-banner --log-opts="--all" --report-format=sarif --report-path=/tmp/gitleaks.sarif
       - name: Upload SARIF to code scanning
         # Surfaces gitleaks findings under Security -> Code scanning.
-        uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # github/codeql-action@v4
         with:
           sarif_file: /tmp/gitleaks.sarif
           category: gitleaks
@@ -144,10 +144,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # github/codeql-action@v4
         with:
           languages: go
       - name: Autobuild
-        uses: github/codeql-action/autobuild@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+        uses: github/codeql-action/autobuild@5595ccaf912efad79be6eef63a5619ff05969be3 # github/codeql-action@v4
       - name: Analyze
-        uses: github/codeql-action/analyze@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # github/codeql-action@v4
