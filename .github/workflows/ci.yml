@@ -1,0 +1,59 @@
+# CI - umbrella (owned by the CI Architect)
+#
+# Top-level continuous integration. Runs on every pull request and on every
+# push to main. Delegates the platform-specific checks to the reusable
+# workflows, each of which owns its jobs and artifacts:
+#
+#   go                -> ci-go.yml        (fmt/vet/build, unit tests, race,
+#                                          windows core cross-compile)
+#   flutter           -> ci-flutter.yml   (format/analyze, widget tests,
+#                                          Android debug APK)
+#   dependency-review -> dependency-review-action (PR lockfile/ecosystem scan)
+#
+# Everything is SHA-pinned with an owner/name@tag comment for humans.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  # CI never writes to the repository; dependency-review grants its own
+  # pull-requests: read below.
+  contents: read
+
+jobs:
+  # Go core + engine checks (reusable; no artifacts uploaded for the
+  # high-frequency PR/push cadence).
+  go:
+    name: Go core
+    uses: ./.github/workflows/ci-go.yml
+
+  # Flutter app checks (reusable; no artifacts uploaded for the high-frequency
+  # PR/push cadence).
+  flutter:
+    name: Flutter app
+    uses: ./.github/workflows/ci-flutter.yml
+
+  # Supply-chain gate on PRs: reviews every dependency change in the diff for
+  # known vulnerabilities and disallowed licenses, and blocks the merge when
+  # either is found. Only meaningful on pull requests, so it is skipped on push.
+  dependency-review:
+    name: Dependency review
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # actions/dependency-review-action@v5.0.0

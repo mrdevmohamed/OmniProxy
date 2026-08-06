@@ -1,0 +1,69 @@
+# Shared Go toolchain setup for OmniProxy (owned by the CI Architect).
+#
+# Used by the Go CI, release, and nightly reusable workflows. Installs the Go
+# version declared in core/go.mod and enables the module cache shared across
+# both modules (core/ + engine/, linked via go.work at the repo root).
+#
+# Callers are expected to have already run actions/checkout; this action does
+# not check out the repository.
+
+name: Setup Go toolchain
+
+description: >-
+  Install the Go toolchain (from core/go.mod by default) and cache the module
+  and build cache shared by the core and engine modules.
+
+inputs:
+  go-version:
+    description: >-
+      Explicit Go version to install (e.g. 1.26.4). Takes precedence over
+      go-version-file when set. Leave empty to read the version from
+      core/go.mod.
+    required: false
+    default: ''
+  go-version-file:
+    description: >-
+      Repo-relative path to a go.mod file whose `go` directive pins the
+      toolchain.
+    required: false
+    default: core/go.mod
+  cache:
+    description: Enable caching of the Go module download and build cache.
+    required: false
+    default: 'true'
+  cache-dependency-path:
+    description: >-
+      Glob patterns of dependency files that feed the cache key. Both modules
+      belong to the same go.work workspace, so their go.sum files are tracked
+      together.
+    required: false
+    default: |
+      core/go.sum
+      engine/go.sum
+
+runs:
+  using: composite
+  steps:
+    # An explicit `go-version` (when provided) overrides the go.mod-derived
+    # version; exactly one of the two setup-go invocations runs per call.
+    - name: Install Go (pinned version)
+      if: ${{ inputs.go-version != '' }}
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # actions/setup-go@v7.0.0
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+    - name: Install Go (from core/go.mod)
+      if: ${{ inputs.go-version == '' }}
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # actions/setup-go@v7.0.0
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+    # Log the resolved toolchain so every dependent job's log records exactly
+    # which Go version was used (cheap; useful when correlating failures).
+    - name: Verify Go toolchain
+      shell: bash
+      run: go version

@@ -1,0 +1,19 @@
+site_name: OmniProxy Engineering Docs
+site_description: Engineering documentation for the OmniProxy VPN client.
+docs_dir: docs
+
+# Navigation is left to the auto-generated ordering so new docs appear
+# without editing mkdocs.yml (low maintenance). The docs' own cross-references
+# and ASCII diagrams render as-is inside code blocks.
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - tables
+  - fenced_code
+  - codehilite

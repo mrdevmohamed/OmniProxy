@@ -1,0 +1,145 @@
+# Release (orchestrator)
+#
+# Top-level release pipeline (owned by the Release Engineer). Pulls the raw
+# build artifacts from release-build.yml, computes checksums, writes the
+# changelog, creates the GitHub Release, and attests the artifact manifest with
+# OIDC-backed build provenance.
+#
+# How it works end-to-end
+# -----------------------
+# 1. `build`  -> reusable release-build.yml. Cross-compiles the Windows core,
+#                builds the Linux + Windows desktop bundles (Linux on
+#                ubuntu-latest, Windows on windows-latest), and delegates
+#                Android (signed APK + AAB) to release-android.yml.
+#                Artifacts: release-linux, release-windows, android-apk,
+#                android-aab.
+# 2. `release` (needs: build, environment: release):
+#    a. checkout with full git history (the changelog script needs it),
+#    b. download the four artifacts into release-assets/,
+#    c. scripts/release/checksums.sh -> release-assets/SHA256SUMS (all four),
+#    d. scripts/release/changelog.sh -> release-assets/CHANGELOG.md (gh CLI),
+#    e. softprops/action-gh-release  -> creates the GitHub Release with the
+#       changelog as body and the artifacts (+ SHA256SUMS) as assets,
+#    f. attest-build-provenance      -> OIDC supply-chain provenance attached
+#       to SHA256SUMS.
+#
+# Trigger paths
+# -------------
+# * `push` on tags v*     -> automatic. Builds the pushed tag, creates a full
+#                            release (prerelease=false). Release notes are
+#                            commits since the previous release tag.
+# * `workflow_dispatch`   -> manual. `tag` is REQUIRED and must already exist
+#                            in the repo; `prerelease` marks the release as a
+#                            pre-release. Use this to cut a release from an
+#                            existing tag without pushing it again (or to
+#                            re-release).
+#
+# macOS is NOT supported (no app/macos directory); no macOS artifact is built.
+# The Windows desktop artifact still ships with the mock-core fallback until
+# the real DLL bridge lands (documented in docs/platform-notes.md §Windows).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Existing git tag to release (e.g. v1.0.0). The tag must already exist
+          in the repository; it is only released here, not created.
+        type: string
+        required: true
+      prerelease:
+        description: Mark this release as a pre-release.
+        type: boolean
+        default: false
+
+permissions:
+  # Least privilege: only the `release` job (which creates the GitHub Release
+  # and attests it) opts up to write access; the build job stays read-only.
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # --- Build every platform artifact ----------------------------------------
+  build:
+    uses: ./.github/workflows/release-build.yml
+    with:
+      # On push the tag is github.ref_name; on workflow_dispatch it is inputs.tag.
+      ref: ${{ inputs.tag || github.ref_name }}
+    # inherit is REQUIRED: release-build.yml forwards it via `secrets: inherit`
+    # to release-android.yml for the ANDROID_KEYSTORE_* signing secrets.
+    # NOTE: those secrets must live at the repository (or organization) level,
+    # not on the `release` environment — that environment only gates the
+    # aggregator job below, not the build job that reads the secrets.
+    secrets: inherit
+
+  # --- Assemble and publish the GitHub Release ------------------------------
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    timeout-minutes: 30
+    steps:
+      # Full history (fetch-depth: 0) so changelog.sh can run `git log` when
+      # there is no previous release tag yet.
+      - name: Checkout (full history for changelog)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      # merge-multiple: true flattens the four artifacts (each a single file)
+      # into release-assets/. The pattern deliberately excludes the intermediate
+      # `windows-core` artifact (retention 1 day) so it never leaks into the
+      # release or SHA256SUMS.
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8.0.1
+        with:
+          path: release-assets/
+          pattern: release-*,android-apk,android-aab
+          merge-multiple: true
+
+      # SHA256SUMS covers the four artifacts (the changelog is generated after
+      # this step and is intentionally not part of the checksum manifest).
+      - name: Generate SHA256SUMS
+        run: ./scripts/release/checksums.sh release-assets/
+
+      # gh (preinstalled) + GH_TOKEN: lists previous releases to find the prior
+      # tag, then diffs commits via the compare API. Falls back to `git log`
+      # for the first release.
+      - name: Generate changelog
+        run: ./scripts/release/changelog.sh release-assets/CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: omniproxy ${{ inputs.tag || github.ref_name }}
+          body_path: release-assets/CHANGELOG.md
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
+
+      # Supply-chain provenance for the artifact manifest (OIDC-based, no
+      # signing key to manage). The signed subject is SHA256SUMS; the assets it
+      # lists are covered by the checksums within it.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # actions/attest-build-provenance@v4.1.1
+        with:
+          subject-path: release-assets/SHA256SUMS

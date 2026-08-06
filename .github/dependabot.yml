@@ -1,0 +1,72 @@
+# Dependabot configuration for OmniProxy.
+# Weekly scans; grouped updates keep PR volume low.
+# No `reviewers` configured: the repo may not have teams set up.
+version: 2
+
+updates:
+  # GitHub Actions: keep third-party action SHA pins current (see the pin
+  # policy comment in .github/workflows/security.yml).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+    open-pull-requests-limit: 10
+    labels:
+      - ci
+      - dependencies
+    groups:
+      # One PR per week for all action bumps keeps noise down.
+      github-actions:
+        patterns:
+          - '*'
+
+  # omniproxy/core Go module.
+  - package-ecosystem: gomod
+    directory: /core
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+    open-pull-requests-limit: 10
+    labels:
+      - go
+      - dependencies
+
+  # omniproxy/engine Go module.
+  #
+  # PIN DISCIPLINE: sing-box is pinned to a known-good version per release and
+  # must NOT be bumped mid-release (upstream ships breaking changes). Dependabot
+  # may open PRs that bump sing-box here - that is expected, but each one
+  # requires a deliberate, human-supervised review coordinated with the release
+  # vehicle before merging. This update block is deliberately NOT grouped so
+  # sing-box bumps arrive as their own PR and can be individually closed/held
+  # without blocking unrelated dependency updates.
+  - package-ecosystem: gomod
+    directory: /engine
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+    open-pull-requests-limit: 10
+    labels:
+      - go
+      - dependencies
+
+  # Flutter/Dart app dependencies.
+  - package-ecosystem: pub
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+    open-pull-requests-limit: 10
+    labels:
+      - flutter
+      - dependencies
+    groups:
+      # Group routine Flutter package bumps into a single PR.
+      flutter:
+        patterns:
+          - '*'

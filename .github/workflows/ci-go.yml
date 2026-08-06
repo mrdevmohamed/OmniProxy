@@ -1,0 +1,170 @@
+# CI - Go
+#
+# Reusable Go CI pipeline for OmniProxy (core + engine). This workflow is a
+# `workflow_call` target only — it never runs on its own; it is invoked by
+# `ci.yml` (per-push/PR) and `nightly.yml` (scheduled), and can be reused by
+# release pipelines by passing a pinned `ref`.
+#
+# Responsibilities, one job per concern:
+#   check        — gofmt + go vet + go build for both modules (fast, cheap gate)
+#   test         — full unit-test suite with coverage profiles + summary
+#   race         — data-race detector on the concurrency-heavy packages
+#   windows-core — validates the cgo c-shared cross-compile for the Windows DLL
+#
+# All commands come from the repo's canonical Makefile / toolchain (Go stdlib
+# + go test only); no extra linters are installed.
+
+name: CI - Go
+
+on:
+  workflow_call:
+    inputs:
+      # Set to true when the caller wants test coverage profiles / built
+      # artifacts preserved (e.g. nightly or release pipelines). ci.yml keeps
+      # this false to stay fast; artifacts are only produced on demand.
+      upload_artifacts:
+        type: boolean
+        default: false
+      # Optional git ref (branch / tag / SHA) to check out. Empty (the default)
+      # means "use whatever ref triggered the caller" — the standard case for
+      # per-push CI. Nightly/release callers pass a pinned ref for reproducibility.
+      ref:
+        type: string
+        default: ''
+
+# Read-only checkout + setup-go cache restore; no write access to the repo.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          # Empty `ref` input falls back to the caller's triggering ref; a
+          # pinned ref overrides it (nightly / release reuse).
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      # gofmt + go vet + go build for both core and engine (see Makefile
+      # `go-check`). Catches formatting, vet, and build regressions cheaply —
+      # this is the first gate on every run and is intentionally fast.
+      - name: Run go-check (fmt, vet, build)
+        run: make go-check
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      # A -coverprofile run also executes the full suite, so this replaces a
+      # separate `make go-test` (no double execution). Coverage files land at
+      # the workspace root so the summary + upload steps see them.
+      - name: Run core tests with coverage
+        run: |
+          cd core && go test -count=1 -coverprofile=../coverage-core.out ./...
+
+      - name: Run engine tests with coverage
+        run: |
+          cd engine && go test -count=1 -coverprofile=../coverage-engine.out ./...
+
+      # Human-readable line-coverage totals for the log; the grep keeps output
+      # to the aggregate `total:` line per module.
+      - name: Print coverage summary
+        run: |
+          echo "==> core coverage (coverage-core.out)"
+          go tool cover -func=coverage-core.out | grep 'total:'
+          echo "==> engine coverage (coverage-engine.out)"
+          go tool cover -func=coverage-engine.out | grep 'total:'
+
+      # Only preserve the profiles when the caller asked for artifacts.
+      - name: Upload coverage profiles
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        if: inputs.upload_artifacts
+        with:
+          name: go-coverage
+          path: |
+            coverage-core.out
+            coverage-engine.out
+          if-no-files-found: error
+          retention-days: 14
+
+  race:
+    name: race
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      # Data-race detector on the concurrency-heavy packages (core/tunnel,
+      # core/vpn). Kept out of the main suite for speed — the full-module race
+      # run is significantly slower.
+      - name: Run race tests (tunnel, vpn)
+        run: |
+          cd core && go test -race -count=1 ./tunnel/... ./vpn/...
+
+  windows-core:
+    name: windows-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      # `make windows-core` cross-compiles core/glue to a Windows DLL with
+      # cgo enabled and then downloads wintun.dll (needs curl + unzip, both
+      # preinstalled on the runner). The apt package provides the mingw CC.
+      - name: Install mingw-w64 cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      # Validates the cgo c-shared cross-compile for the Windows target and
+      # feeds the release pipeline (artifacts are produced on demand below).
+      - name: Build Windows core (DLL)
+        run: make windows-core
+
+      # Only upload when the caller asked for artifacts. The name is distinct
+      # from release-build.yml's `windows-core` artifact: nightly runs call
+      # BOTH workflows, and GitHub rejects two artifacts with the same name in
+      # one run (409). This CI copy is diagnostic; the release pipeline
+      # cross-compiles its own DLL.
+      - name: Upload Windows core artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        if: inputs.upload_artifacts
+        with:
+          name: go-windows-core
+          path: |
+            core/out/omniproxy.dll
+            core/out/wintun.dll
+          if-no-files-found: error
+          retention-days: 14

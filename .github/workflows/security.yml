@@ -1,0 +1,153 @@
+# Security scanning for OmniProxy.
+#
+# Runs weekly (Monday 03:17 UTC) and on manual dispatch via workflow_dispatch.
+# All jobs are read-only against the repository. Findings surface through failed
+# jobs (govulncheck / dart pub audit / gitleaks) and through GitHub code
+# scanning (CodeQL + gitleaks SARIF under Security -> Code scanning).
+#
+# Action pinning policy: every third-party action is pinned to a full 40-char
+# SHA (immutable) with a `# owner/name@tag` comment for readability. Dependabot
+# (.github/dependabot.yml) proposes deliberate moves of these pins.
+name: Security scan
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Go vulnerability scan (govulncheck)
+  # ---------------------------------------------------------------------------
+  # Catches known vulnerabilities in the Go dependency graph, including the
+  # pinned sing-box v1.13.15 and its transitive stack (tun, outbound, DNS).
+  go-vulncheck:
+    name: govulncheck (core + engine)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+      - name: Set up Go
+        # Repo composite that wraps actions/setup-go v7.0.0; keeps the Go
+        # toolchain pin (1.26.4) in one place for the whole CI suite.
+        uses: ./.github/actions/setup-go
+      - name: Install govulncheck
+        # govulncheck is a CLI tool, not a GitHub Action, so it is installed
+        # here instead of pinned as an action. Pin policy: @latest is
+        # intentional; move to a pinned golang.org/x/vuln release tag in a
+        # future hardening pass once a release cadence is agreed.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Scan core module
+        working-directory: core
+        run: govulncheck ./...
+      - name: Scan engine module
+        working-directory: engine
+        run: govulncheck ./...
+      # govulncheck exits non-zero when a vulnerability affects the build graph;
+      # failing the job forces triage of the advisory before the scan is green.
+
+  # ---------------------------------------------------------------------------
+  # Flutter/Dart dependency audit (dart pub audit)
+  # ---------------------------------------------------------------------------
+  # Audits the app/ dependency graph against the pub.dev advisory database.
+  dart-audit:
+    name: dart pub audit (app/)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+      - name: Set up Flutter
+        # Repo composite that wraps subosito/flutter-action v2.23.0; keeps the
+        # Flutter version pin (3.44.6) in one place for the whole CI suite.
+        uses: ./.github/actions/setup-flutter
+      - name: Resolve dependencies
+        working-directory: app
+        run: flutter pub get
+      - name: Audit packages
+        working-directory: app
+        run: dart pub audit
+        # Caveat: `dart pub audit` exits non-zero (failing the job) when any
+        # package in the resolved graph has a published vulnerability. This is
+        # the desired fail-closed behavior; `--no-fatal` is deliberately NOT
+        # used so findings surface as a red job.
+
+  # ---------------------------------------------------------------------------
+  # Secret scan (gitleaks)
+  # ---------------------------------------------------------------------------
+  # Scans the FULL git history (all refs) for leaked secrets/credentials and
+  # uploads the results as SARIF to GitHub code scanning.
+  gitleaks:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    permissions:
+      # security-events: write is required for the SARIF upload. Job-level
+      # permissions REPLACE the workflow-level set, so contents: read must be
+      # re-declared here or the checkout step would lose token access.
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          # gitleaks needs the full commit history; a shallow clone would miss
+          # secrets committed and later removed from HEAD.
+          fetch-depth: 0
+      - name: Install gitleaks v8.30.1
+        working-directory: ${{ runner.temp }}
+        run: |
+          # gitleaks-action is commercially licensed since v8.19, so the OSS
+          # binary is downloaded directly. The SHA-256 (from the official
+          # gitleaks_8.30.1_checksums.txt) is hardcoded for a tamper-evident,
+          # auditable pin.
+          curl -sSL -o gitleaks_8.30.1_linux_x64.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz
+          echo "${{ runner.temp }}" >> "$GITHUB_PATH"
+      - name: Scan full history
+        # continue-on-error: false (the default, stated explicitly) = fail the
+        # workflow when any secret is found; secrets must never merge silently.
+        continue-on-error: false
+        run: gitleaks git --no-banner --log-opts="--all" --report-format=sarif --report-path=/tmp/gitleaks.sarif
+      - name: Upload SARIF to code scanning
+        # Surfaces gitleaks findings under Security -> Code scanning.
+        uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+        with:
+          sarif_file: /tmp/gitleaks.sarif
+          category: gitleaks
+
+  # ---------------------------------------------------------------------------
+  # CodeQL static analysis (Go)
+  # ---------------------------------------------------------------------------
+  # Kotlin/Java CodeQL is DEFERRED: CodeQL needs a working Gradle wrapper for
+  # autobuild, and this repo intentionally does not commit the wrapper (it is
+  # gitignored, so autobuild is unreliable). Scanning Go only keeps the
+  # analysis green and meaningful. See docs/CI.md for details.
+  codeql:
+    name: CodeQL (Go)
+    runs-on: ubuntu-latest
+    permissions:
+      # See the gitleaks job comment: job-level permissions replace the
+      # workflow-level set, so contents: read is re-declared here too.
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+        with:
+          languages: go
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4
+      - name: Analyze
+        uses: github/codeql-action/analyze@24c7eb380a2dc368f2d129e4c65e51d172983a1e # github/codeql-action@v4

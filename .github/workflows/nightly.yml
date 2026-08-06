@@ -1,0 +1,120 @@
+# Nightly (owned by the CI Architect)
+#
+# Scheduled build & verification of the main branch, plus an optional nightly
+# prerelease. Runs daily at 02:00 UTC and on manual dispatch.
+#
+#   go / flutter           -> CI on main with test/build artifacts uploaded.
+#   nightly-release        -> full release build (all platforms, signed Android)
+#                             gated by the ENABLE_NIGHTLY_RELEASE repo variable.
+#   create-nightly-release -> when enabled, downloads the build artifacts and
+#                             publishes a `nightly-YYYYMMDD` GitHub prerelease.
+#
+# To enable nightly releases, set the repository variable
+#     ENABLE_NIGHTLY_RELEASE = true
+# (Settings -> Secrets and variables -> Actions -> Variables). While unset or
+# 'false', the workflow still runs full CI nightly but publishes nothing.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a running nightly: builds are expensive and a cancelled run
+  # leaves no artifacts to publish.
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  # Only the release-publishing job opts into write access below.
+  contents: read
+
+jobs:
+  # Go CI on main, with coverage profiles + Windows core artifacts preserved.
+  go:
+    name: Go core
+    uses: ./.github/workflows/ci-go.yml
+    with:
+      upload_artifacts: true
+      ref: main
+
+  # Flutter CI on main, with coverage + debug APK artifacts preserved.
+  # (ci-flutter.yml accepts no `ref` input; on schedule/dispatch the workflow
+  # already runs against main.)
+  flutter:
+    name: Flutter app
+    uses: ./.github/workflows/ci-flutter.yml
+    with:
+      upload_artifacts: true
+
+  # Full release build from main: Linux/Windows bundles + signed Android
+  # APK/AAB. `secrets: inherit` is required so the ANDROID_KEYSTORE_* signing
+  # secrets reach release-android.yml via release-build.yml (it forwards them).
+  nightly-release:
+    name: Release build (nightly)
+    if: ${{ vars.ENABLE_NIGHTLY_RELEASE == 'true' }}
+    uses: ./.github/workflows/release-build.yml
+    with:
+      ref: main
+      upload_artifacts: true
+    secrets: inherit
+
+  # Publish the four build artifacts as a nightly prerelease. Gated by the same
+  # variable as nightly-release (when that job is skipped, so is this one).
+  create-nightly-release:
+    name: Create nightly prerelease
+    needs: nightly-release
+    if: ${{ vars.ENABLE_NIGHTLY_RELEASE == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      # Writing the GitHub Release plus reading the run's artifacts.
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # gh run download fetches artifacts by run id. The artifacts uploaded by
+      # release-build.yml belong to this same workflow run (reusable workflow
+      # artifacts are scoped to the caller's run), so the current run's id is
+      # sufficient -- no cross-run download is needed. --repo is required:
+      # there is no checkout in this job, so gh cannot resolve the repository
+      # from a git remote.
+      - name: Download build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "${{ github.run_id }}" \
+            --repo "${{ github.repository }}" \
+            --name release-linux \
+            --name release-windows \
+            --name android-apk \
+            --name android-aab \
+            --dir release-assets
+          # gh extracts each artifact into a per-artifact directory; flatten the
+          # files so the checksum manifest and the release upload see plain files.
+          find release-assets -mindepth 2 -type f -exec mv -f -t release-assets {} +
+          find release-assets -depth -type d -empty -delete
+
+      # Manifest of every downloaded asset, in the standard sha256sum format.
+      # Generated after flattening, so SHA256SUMS itself is excluded from the
+      # checksums it contains.
+      - name: Generate SHA256SUMS
+        shell: bash
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS
+
+      # Create the prerelease and attach all assets (including SHA256SUMS) in
+      # one call. Rerunning on the same day fails loudly (tag already exists)
+      # rather than silently overwriting a published nightly.
+      - name: Publish nightly prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="nightly-$(date +%Y%m%d)"
+          gh release create "$TAG" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --prerelease \
+            --title "Nightly $(date +%Y-%m-%d)" \
+            --notes "Nightly build from main."

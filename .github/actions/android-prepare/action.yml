@@ -1,0 +1,122 @@
+# Android build environment for OmniProxy (owned by the CI Architect).
+#
+# Assembles everything the Android Gradle build needs on a fresh runner:
+#   1. JDK (Temurin 17) for Gradle/AGP
+#   2. Gradle cache + build-service config (gradle/actions/setup-gradle)
+#   3. accepted Android SDK licenses (via flutter doctor)
+#   4. pinned Android NDK + guarded ANDROID_NDK_HOME export
+#   5. deterministic regeneration of the gitignored Gradle wrapper
+#
+# Assumes the caller has already run actions/checkout AND setup-flutter
+# (flutter doctor --android-licenses needs the Flutter SDK on PATH).
+
+name: Prepare Android build environment
+
+description: >-
+  Configure JDK, Gradle caching, Android licenses, NDK, and a regenerated
+  Gradle wrapper for the Android build.
+
+inputs:
+  java-version:
+    description: JDK version for Gradle/AGP (Temurin).
+    required: false
+    default: '17'
+  java-distribution:
+    description: JDK distribution.
+    required: false
+    default: temurin
+  gradle-version:
+    description: Gradle version to regenerate the wrapper with.
+    required: false
+    default: '9.1.0'
+
+runs:
+  using: composite
+  steps:
+    # --- 1. JDK -------------------------------------------------------------
+    - name: Set up JDK
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # actions/setup-java@v5.7.0
+      with:
+        distribution: ${{ inputs.java-distribution }}
+        java-version: ${{ inputs.java-version }}
+
+    # --- 2. Gradle cache + build services -----------------------------------
+    # No gradle-version input: the wrapper (regenerated below) drives the
+    # actual Gradle version; setup-gradle only provides cache restore/save and
+    # the build services configuration.
+    - name: Set up Gradle cache
+      uses: gradle/actions/setup-gradle@67621b124fd2e251c5e8a0e6e3b91318f2287669 # gradle/actions/setup-gradle@v6.3.0
+
+    # --- 3. Android SDK licenses --------------------------------------------
+    # Relies on ANDROID_HOME (pre-set on hosted runners) and the Flutter SDK
+    # from the caller's setup-flutter step. `|| true`: runner images usually
+    # already accept licenses; if this ever fails, the Gradle build surfaces
+    # the real licensing error later with a clearer message.
+    - name: Accept Android SDK licenses
+      shell: bash
+      run: |
+        set -euo pipefail
+        yes | flutter doctor --android-licenses || true
+
+    # --- 4. Android NDK -----------------------------------------------------
+    # Install the pinned NDK only when it is not already present, then export
+    # ANDROID_NDK_HOME only if the install actually succeeded (guarded export;
+    # a failed install is deferred to Gradle's on-demand NDK resolution).
+    - name: Install Android NDK
+      shell: bash
+      run: |
+        set -euo pipefail
+        NDK_VERSION="27.0.12077973"
+        NDK_DIR="${ANDROID_HOME:-}/ndk/${NDK_VERSION}"
+        if [ -d "$NDK_DIR" ]; then
+          echo "NDK ${NDK_VERSION} already installed at ${NDK_DIR}"
+        else
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] && [ -x "${ANDROID_HOME:-}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" "ndk;${NDK_VERSION}" >/dev/null 2>&1 \
+              || echo "NDK install skipped/failed; Gradle will resolve the NDK on demand"
+          else
+            echo "sdkmanager not found; Gradle will resolve the NDK on demand"
+          fi
+        fi
+        if [ -d "$NDK_DIR" ]; then
+          echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "Exported ANDROID_NDK_HOME=${NDK_DIR}"
+        fi
+
+    # --- 5. Regenerate the Gradle wrapper -----------------------------------
+    # The wrapper jar/scripts are gitignored (app/android/.gitignore), so CI
+    # cannot rely on a checked-in wrapper. Regenerating it in a scratch project
+    # pins the wrapper to a known Gradle version and produces identical output
+    # on every machine. The committed gradle-wrapper.properties already points
+    # at gradle-9.1.0-all.zip, so the regenerated wrapper stays consistent with
+    # it. Only the three gitignored files are copied into the repo tree.
+    - name: Regenerate Gradle wrapper
+      shell: bash
+      env:
+        GRADLE_VERSION: ${{ inputs.gradle-version }}
+      run: |
+        set -euo pipefail
+        WRAPGEN_DIR="/tmp/wrapgen"
+        ANDROID_DIR="${GITHUB_WORKSPACE}/app/android"
+        rm -rf "$WRAPGEN_DIR"
+        mkdir -p "$WRAPGEN_DIR"
+        printf "rootProject.name = '%s'\n" "wrapgen" > "$WRAPGEN_DIR/settings.gradle"
+
+        curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle-dist.zip
+        unzip -qo /tmp/gradle-dist.zip -d /tmp/gradle
+
+        "/tmp/gradle/gradle-${GRADLE_VERSION}/bin/gradle" \
+          -p "$WRAPGEN_DIR" wrapper \
+          --gradle-version "$GRADLE_VERSION" \
+          --distribution-type all
+
+        mkdir -p "$ANDROID_DIR/gradle/wrapper"
+        cp "$WRAPGEN_DIR/gradlew" "$ANDROID_DIR/gradlew"
+        cp "$WRAPGEN_DIR/gradlew.bat" "$ANDROID_DIR/gradlew.bat"
+        cp "$WRAPGEN_DIR/gradle/wrapper/gradle-wrapper.jar" "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.jar"
+        chmod +x "$ANDROID_DIR/gradlew"
+        echo "Regenerated Gradle ${GRADLE_VERSION} wrapper in ${ANDROID_DIR}"

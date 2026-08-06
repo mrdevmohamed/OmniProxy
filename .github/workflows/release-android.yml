@@ -1,0 +1,155 @@
+# Reusable Android release workflow: signed AAB (Play Store) + release APK.
+#
+# Caller example:
+#   jobs:
+#     android:
+#       uses: ./.github/workflows/release-android.yml
+#       with:
+#         ref: ${{ github.sha }}   # optional; default '' -> github.ref
+#         upload_artifacts: true   # optional; default true
+#       secrets: inherit           # <- declared by the CALLER, not this workflow
+#
+# Secrets note: this reusable workflow declares no `secrets:` block. The
+# caller passes the repository secrets via `secrets: inherit`, so the steps
+# below read them directly as `${{ secrets.* }}` (i.e. from the caller's repo).
+#
+# Secrets read from the repository (via the caller's `secrets: inherit`):
+#   ANDROID_KEYSTORE_BASE64    base64 of the upload-keystore.jks keystore
+#   ANDROID_KEYSTORE_PASSWORD  password of the keystore
+#   ANDROID_KEY_ALIAS          signing key alias
+#   ANDROID_KEY_PASSWORD       password of the signing key
+#
+# If ANDROID_KEYSTORE_BASE64 is missing/empty, scripts/release/android_signing.sh
+# emits a warning and Gradle falls back to the debug key, so forks and
+# secret-less CI still produce a build. If the base64 IS set but any of the
+# three password/alias secrets is missing, the script fails loudly (fail-closed
+# so a half-configured signing setup never ships).
+#
+# Artifacts uploaded: `android-apk` -> dist/omniproxy-<version>.apk and
+# `android-aab` -> dist/omniproxy-<version>.aab, where <version> is the release
+# ref with a leading "v" stripped (e.g. v1.0.0 -> 1.0.0, or "main" for nightly).
+#
+# Build strategy: `make aar` (gomobile bind) runs once, then `flutter build
+# appbundle`/`flutter build apk` are invoked directly so Gradle consumes the
+# produced AAR. The Makefile's `apk`/`appbundle` targets re-run `make aar`
+# (their phony prerequisite), which would triple the gomobile bind; the direct
+# calls keep the cache meaningful and the build to a single bind.
+
+name: Release - Android
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Git ref (branch, tag, or SHA) to build. Defaults to the caller's
+          workflow ref when empty.
+        type: string
+        default: ''
+        required: false
+      upload_artifacts:
+        description: Upload the built AAB and APK as workflow artifacts.
+        type: boolean
+        default: true
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-android:
+    name: Build release AAB + APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Flutter
+        uses: ./.github/actions/setup-flutter
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Prepare Android (JDK 17, NDK, Gradle wrapper, Gradle caches)
+        uses: ./.github/actions/android-prepare
+
+      - name: Install gomobile
+        run: go install golang.org/x/mobile/cmd/gomobile@latest
+
+      # The gomobile AAR is gitignored but must exist before `flutter build`
+      # (app/android/app/build.gradle.kts declares implementation(files("libs/omniproxy.aar"))).
+      # Cache it across runs; rebuild only when the Go core changes. The key
+      # covers BOTH workspace modules (core/ + engine/): `gomobile bind`
+      # compiles the engine too, so an engine-only change must also miss the
+      # cache. The key is kept identical to ci-flutter.yml's android-build job.
+      - name: Restore gomobile AAR from cache
+        id: aar-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # actions/cache@v6.1.0
+        with:
+          path: app/android/app/libs/omniproxy.aar
+          key: aar-${{ hashFiles('core/go.mod','core/go.sum','engine/go.mod','engine/go.sum','core/mobile/**','core/**/*.go','engine/**/*.go','go.work') }}
+
+      - name: Build AAR (gomobile bind)
+        if: steps.aar-cache.outputs.cache-hit != 'true'
+        run: make aar
+
+      # Writes app/android/key.properties + upload-keystore.jks from the
+      # ANDROID_* secrets; falls back to the debug key when they are absent.
+      - name: Configure release signing
+        run: scripts/release/android_signing.sh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      # Version is the release ref with a leading "v" stripped, e.g. v1.0.0 ->
+      # 1.0.0. For nightly (ref: main) this yields "main", keeping artifact
+      # names unique across nightly runs of the same day.
+      - name: Compute version
+        id: version
+        run: |
+          REF="${{ inputs.ref || github.ref_name }}"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      # Build the AAB first: it is the artifact uploaded to Google Play. Both
+      # builds are invoked directly (not via `make apk`/`make appbundle`) so
+      # gomobile is NOT re-run: the AAR from the cache/make-aar step above is
+      # what Gradle compiles against.
+      - name: Build release app bundle (AAB)
+        working-directory: app
+        run: flutter build appbundle --release
+
+      - name: Build release APK
+        working-directory: app
+        run: flutter build apk --release
+
+      # Stage versioned copies so the release aggregator can distinguish the
+      # Android files from any other artifact with the same base name.
+      - name: Stage versioned release artifacts
+        run: |
+          mkdir -p dist
+          cp app/build/app/outputs/bundle/release/app-release.aab "dist/omniproxy-${VERSION}.aab"
+          cp app/build/app/outputs/flutter-apk/app-release.apk "dist/omniproxy-${VERSION}.apk"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Upload AAB
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: android-aab
+          path: dist/omniproxy-${{ steps.version.outputs.version }}.aab
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload APK
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: android-apk
+          path: dist/omniproxy-${{ steps.version.outputs.version }}.apk
+          if-no-files-found: error
+          retention-days: 14

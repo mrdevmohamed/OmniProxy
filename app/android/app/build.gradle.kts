@@ -4,6 +4,13 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing is injected by CI via key.properties (see scripts/release/android_signing.sh).
+// Absent key.properties (local dev, forks) falls back to the debug key so builds never break.
+val keyPropsFile = rootProject.file("key.properties")
+val keyProps = java.util.Properties().apply {
+    if (keyPropsFile.exists()) keyPropsFile.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.omniproxy.omniproxy"
     compileSdk = flutter.compileSdkVersion
@@ -15,7 +22,6 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.omniproxy.omniproxy"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
@@ -25,11 +31,21 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (keyPropsFile.exists()) {
+                keyAlias = keyProps["keyAlias"] as String
+                keyPassword = keyProps["keyPassword"] as String
+                storeFile = rootProject.file(keyProps["storeFile"] as String)
+                storePassword = keyProps["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Sign with the release key from key.properties when present, else debug key.
+            signingConfig = if (keyPropsFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
     }
 }

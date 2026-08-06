@@ -1,0 +1,214 @@
+# Release - Build (reusable)
+#
+# Shared build step for the release pipeline (owned by the Release Engineer).
+# Builds every supported platform and uploads the raw release artifacts as
+# workflow artifacts. The orchestrator (release.yml) pulls them together,
+# computes checksums, writes the changelog, creates the GitHub Release, and
+# attests the artifact manifest.
+#
+# Platforms: android, linux, windows. macOS is NOT supported (no app/macos dir,
+# per docs/platform-notes.md) and is deliberately not built here.
+#
+# Called with:
+#   inputs.ref              string  ref (branch/tag/SHA) to build. When empty,
+#                                   the triggering ref (github.ref) is used.
+#   inputs.upload_artifacts bool    upload artifacts as workflow artifacts.
+#                                   Set false for build-validation only.
+#   secrets: inherit        required by the Android job so signing secrets
+#                           (ANDROID_KEYSTORE_*) reach release-android.yml.
+#
+# Flow:
+#   windows-core  -> cross-compiles omniproxy.dll + fetches wintun.dll on
+#                    ubuntu-latest (the core DLL needs no Windows host).
+#   build-app     -> matrix [linux, windows]. Linux builds the bundle via
+#                    `make flutter-linux`; Windows builds on a Windows host and
+#                    copies the Go core DLLs next to the exe (forward-compatible
+#                    step: the Windows CMake does not bundle the DLL yet, and the
+#                    Windows UI currently falls back to a mock core — see
+#                    docs/platform-notes.md §Windows).
+#   build-android -> delegates to release-android.yml (owned by the Android
+#                    Release Engineer), which checks out its own ref and uploads
+#                    android-apk + android-aab.
+#
+# Artifacts produced:
+#   release-linux    dist/omniproxy-<version>-linux-x64.tar.gz
+#   release-windows  dist/omniproxy-<version>-windows-x64.zip
+#   android-apk      omniproxy-<version>.apk   (named by release-android.yml)
+#   android-aab      omniproxy-<version>.aab   (named by release-android.yml)
+
+name: Release - Build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Git ref (branch, tag, or SHA) to build. Defaults to the caller's
+          workflow ref when empty.
+        type: string
+        default: ''
+        required: false
+      upload_artifacts:
+        description: Upload the built artifacts as workflow artifacts.
+        type: boolean
+        default: true
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # --- Windows core (cross-compiled from Linux) -----------------------------
+  # Go bridge DLL + Wintun driver. This is an *intermediate* artifact consumed
+  # by the Windows build-app job, so it is uploaded unconditionally in the
+  # upload_artifacts=true flow and kept only 1 day.
+  windows-core:
+    name: Windows core (DLL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Cross-compile core DLL + fetch wintun
+        run: make windows-core
+
+      - name: Upload windows-core artifact (intermediate)
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: windows-core
+          path: |
+            core/out/omniproxy.dll
+            core/out/wintun.dll
+          if-no-files-found: error
+          retention-days: 1
+
+  # --- Desktop app (Linux bundle / Windows zip) -----------------------------
+  # needs: windows-core so the Windows variant can pull the core DLL artifact.
+  # (The Linux variant waits too; this is a deliberate simplification of the
+  # matrix dependency, ~1-2 min cost.)
+  build-app:
+    name: Build app (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    needs: [windows-core]
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+          - platform: windows
+            os: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Flutter
+        uses: ./.github/actions/setup-flutter
+
+      # --- Linux ---
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+
+      # `make flutter-linux` builds the Go core (libomniproxy.so + helper)
+      # and then the Flutter Linux release bundle.
+      - name: Build Linux release bundle
+        if: matrix.platform == 'linux'
+        run: make flutter-linux
+
+      # --- Windows ---
+      - name: Build Windows release app
+        if: matrix.platform == 'windows'
+        working-directory: app
+        run: flutter build windows --release
+
+      # Fetch the cross-compiled Go core and place omniproxy.dll + wintun.dll
+      # next to the exe. The app's Windows CMake does NOT yet bundle the Go DLL
+      # (the Windows UI falls back to a mock core, documented in the repo); this
+      # copies the DLLs so the artifact is forward-compatible with the real core.
+      - name: Download windows-core artifact
+        if: ${{ inputs.upload_artifacts && matrix.platform == 'windows' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8.0.1
+        with:
+          name: windows-core
+          path: core-out/
+
+      - name: Copy Go core DLLs next to the app executable
+        if: ${{ inputs.upload_artifacts && matrix.platform == 'windows' }}
+        run: |
+          cp core-out/omniproxy.dll app/build/windows/x64/runner/Release/
+          cp core-out/wintun.dll app/build/windows/x64/runner/Release/
+
+      # --- Packaging (shared) ---
+      # Version is the release ref with a leading "v" stripped, e.g. v1.0.0 -> 1.0.0.
+      - name: Compute version
+        id: version
+        run: |
+          REF="${{ inputs.ref || github.ref_name }}"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Package Linux release
+        if: matrix.platform == 'linux'
+        run: ./scripts/release/package_linux.sh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Package Windows release
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./scripts/release/package_windows.ps1 -Version "${{ steps.version.outputs.version }}"
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+
+      - name: Upload release-linux artifact
+        if: ${{ inputs.upload_artifacts && matrix.platform == 'linux' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: release-linux
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload release-windows artifact
+        if: ${{ inputs.upload_artifacts && matrix.platform == 'windows' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: release-windows
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  # --- Android (APK + AAB) --------------------------------------------------
+  # Delegates entirely to release-android.yml (owned by the Android Release
+  # Engineer), which checks out its own ref and uploads android-apk +
+  # android-aab. Requires no checkout here. secrets: inherit is mandatory so
+  # the ANDROID_KEYSTORE_* signing secrets reach that workflow.
+  build-android:
+    name: Build Android (APK + AAB)
+    uses: ./.github/workflows/release-android.yml
+    with:
+      ref: ${{ inputs.ref }}
+      upload_artifacts: ${{ inputs.upload_artifacts }}
+    secrets: inherit

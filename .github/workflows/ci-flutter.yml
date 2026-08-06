@@ -1,0 +1,172 @@
+# CI - Flutter
+#
+# Reusable Flutter CI invoked from the top-level ci.yml (PRs/pushes) and
+# nightly.yml. This workflow deliberately has NO trigger of its own
+# (`workflow_call:` only) so cadence/triggers live in one place per caller.
+#
+# Jobs:
+#   1. format-analyze  — style gate + static analysis (format is advisory)
+#   2. test            — matrix over linux/windows: `flutter test --coverage`
+#   3. android-build   — full Android toolchain check (gomobile AAR + Gradle)
+#
+# Design rationale:
+#   - All actions are pinned to full commit SHAs (supply-chain hygiene) with
+#     a `owner/name@tag` comment for humans.
+#   - The repo has three layers (app/ + core/ + engine/); Go must be built
+#     first so the Linux bridge E2E actually executes instead of skipping.
+
+name: CI - Flutter
+
+on:
+  # Callable only. Callers own trigger + artifact policy via `upload_artifacts`.
+  workflow_call:
+    inputs:
+      upload_artifacts:
+        description: >-
+          Upload build/coverage artifacts. Callers set true for release/nightly
+          cadences, false for high-frequency PR runs (avoids quota burn).
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  # Read-only repo access; no tokens issued beyond what checkout needs.
+  contents: read
+
+defaults:
+  run:
+    # Consistent shell across the matrix (git-bash on windows-latest).
+    shell: bash
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Format + analyze
+  # -------------------------------------------------------------------------
+  format-analyze:
+    name: Format & analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+
+      # Shared Flutter toolchain (pinned via composite action defaults).
+      - uses: ./.github/actions/setup-flutter
+
+      # NON-GATING on purpose: the repo currently has formatting drift (21 files),
+      # so this step reports drift without blocking the pipeline. Re-enable the
+      # gate by setting `continue-on-error: false` once the tree is formatted.
+      - name: Format check (non-gating)
+        working-directory: app
+        continue-on-error: true
+        run: dart format --output=none --set-exit-if-changed lib test integration_test
+
+      # Gating: `flutter analyze` passes today; a regression here fails CI.
+      - name: Static analysis
+        working-directory: app
+        run: flutter analyze
+
+  # -------------------------------------------------------------------------
+  # 2. Unit/widget tests + Linux bridge E2E, across both desktop host OSes
+  # -------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false # let both OSes finish; one failure shouldn't cancel the other
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+
+      - uses: ./.github/actions/setup-flutter
+
+      # Linux desktop builds need native GTK/LLVM toolchain deps. Skipped on
+      # Windows (MSVC toolchain ships with the runner).
+      - name: Install Linux desktop build deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+
+      # Build the Go core for Linux first: the E2E at app/test/e2e_linux_bridge_test.dart
+      # silently skips (lines 19-28) when core/out/libomniproxy.so is missing, which
+      # would make "test passed" a false signal. Building it here keeps the E2E real.
+      - name: Build Linux Go core (bridge E2E prerequisite)
+        if: matrix.os == 'ubuntu-latest'
+        run: make linux-core
+
+      # Covers widget tests + the Linux bridge E2E; --coverage emits coverage/lcov.info.
+      - name: Flutter tests (with coverage)
+        working-directory: app
+        run: flutter test --coverage
+
+      # Human-readable line-coverage summary from lcov.info. `|| true` so a
+      # malformed/absent lcov file (or missing awk on a runner) never fails CI.
+      - name: Print line-coverage summary
+        working-directory: app
+        run: |
+          awk -F'[:,]' '/^LF:/{l+=1} /^LH:/{h+=1} END{printf "LINES %d/%d = %.1f%%\n", h, l, (l?100*h/l:0)}' coverage/lcov.info || true
+
+      # Upload coverage once, from the Linux leg only (same test suite on both
+      # OSes; uploading from Windows would duplicate identical lcov data).
+      - name: Upload coverage (linux only, opt-in)
+        if: inputs.upload_artifacts && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: flutter-coverage-lcov
+          path: app/coverage/lcov.info
+          if-no-files-found: warn # coverage is informational; never fail the job
+          retention-days: 14
+
+  # -------------------------------------------------------------------------
+  # 3. Android toolchain build (debug APK)
+  # -------------------------------------------------------------------------
+  android-build:
+    name: Android build (debug APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+
+      - uses: ./.github/actions/setup-flutter
+
+      # Composite action: JDK 17, Gradle caches, Android licenses, NDK env,
+      # and regeneration of the gitignored Gradle wrapper.
+      - uses: ./.github/actions/android-prepare
+
+      # gomobile must exist before `make aar` (Makefile hard-fails otherwise).
+      - name: Install gomobile
+        run: go install golang.org/x/mobile/cmd/gomobile@latest
+
+      # gomobile bind is slow; the ~73MB AAR is cached keyed on the Go source
+      # hash so repeated runs skip the bind entirely. On a cache hit the
+      # `make aar` step below is skipped via `cache-hit`. The key covers BOTH
+      # workspace modules (core/ + engine/): `gomobile bind` compiles the
+      # engine too, so an engine-only change must also miss the cache.
+      - name: Cache gomobile AAR
+        id: aar-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # actions/cache@v6.1.0
+        with:
+          path: app/android/app/libs/omniproxy.aar
+          key: aar-${{ hashFiles('core/go.mod','core/go.sum','engine/go.mod','engine/go.sum','core/mobile/**','core/**/*.go','engine/**/*.go','go.work') }}
+
+      - name: Build gomobile AAR (skip on cache hit)
+        if: steps.aar-cache.outputs.cache-hit != 'true'
+        run: make aar
+
+      # Validates the Android toolchain (gomobile AAR + Gradle) on every PR
+      # without signing overhead — debug APK keeps PR CI fast; signing stays
+      # with the release/nightly pipelines.
+      - name: Build debug APK
+        working-directory: app
+        run: flutter build apk --debug
+
+      - name: Upload debug APK (opt-in)
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: omniproxy-app-debug-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error # a missing APK means the build is broken
+          retention-days: 14
