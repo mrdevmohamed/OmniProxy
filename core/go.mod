@@ -3,7 +3,7 @@ module omniproxy/core
 go 1.26.4
 
 require (
-	github.com/sagernet/sing v0.8.12-0.20260726145744-ef2df370afca
+	github.com/sagernet/sing v0.8.12
 	github.com/sagernet/sing-box v1.13.15
 	github.com/zalando/go-keyring v0.2.8
 	modernc.org/sqlite v1.56.0
