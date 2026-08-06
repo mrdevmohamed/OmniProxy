@@ -3,7 +3,7 @@ module omniproxy/engine
 go 1.26.4
 
 require (
-	github.com/sagernet/sing v0.8.12-0.20260726145744-ef2df370afca
+	github.com/sagernet/sing v0.8.12
 	github.com/sagernet/sing-box v1.13.15
 	github.com/sagernet/sing-tun v0.8.12-0.20260727151122-3a09076491df
 	golang.org/x/net v0.50.0
