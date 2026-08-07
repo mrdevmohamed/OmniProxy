@@ -42,17 +42,20 @@ jobs:
       - name: Build core + Flutter release bundle
         run: make build-linux
 
-      - name: Package tarball
+      - name: Stage bundle
         run: |
-          mkdir -p dist/stage/omniproxy
-          cp -r app/build/linux/x64/release/bundle/. dist/stage/omniproxy/
-          tar -czf dist/omniproxy-linux-x86_64.tar.gz -C dist/stage omniproxy
+          mkdir -p dist
+          cp -r app/build/linux/x64/release/bundle dist/omniproxy
+          tar -czf dist/omniproxy-linux-x86_64.tar.gz -C dist omniproxy
 
+      # Upload the raw folder, not the tarball: upload-artifact always zips,
+      # so a .tar.gz artifact would come out double-compressed. The single
+      # tarball is attached to the GitHub Release instead.
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: omniproxy-linux
-          path: dist/omniproxy-linux-x86_64.tar.gz
+          path: dist/omniproxy
           if-no-files-found: error
 
       - name: Publish to GitHub Release

@@ -64,11 +64,14 @@ jobs:
           Compress-Archive -Path app/build/windows/x64/runner/Release/* `
             -DestinationPath dist/omniproxy-windows-x86_64.zip -Force
 
+      # Upload the raw Release folder, not the zip: upload-artifact always
+      # zips, so a .zip artifact would come out double-compressed. The single
+      # zip is attached to the GitHub Release instead.
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: omniproxy-windows
-          path: dist/omniproxy-windows-x86_64.zip
+          path: app/build/windows/x64/runner/Release/
           if-no-files-found: error
 
       - name: Publish to GitHub Release
