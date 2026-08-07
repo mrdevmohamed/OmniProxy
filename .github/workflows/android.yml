@@ -42,9 +42,12 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
-      # Pins gomobile to the x/mobile version in core/go.mod.
+      # Pins gomobile to the x/mobile version in core/go.mod; init builds the
+      # gobind helper gomobile bind needs.
       - name: Install gomobile
-        run: go install golang.org/x/mobile/cmd/gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile
+          gomobile init
         working-directory: core
 
       - name: Build APK (gomobile AAR + flutter build apk)
