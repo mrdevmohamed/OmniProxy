@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:omniproxy/app/app_root.dart';
 import 'package:omniproxy/core/models.dart';
 import 'package:omniproxy/core/mock_api_client.dart';
+import 'package:omniproxy/features/dashboard/dashboard_screen.dart';
+import 'package:omniproxy/features/logs/logs_screen.dart';
+import 'package:omniproxy/features/servers/servers_screen.dart';
 import 'package:omniproxy/features/settings/settings_screen.dart';
 import 'package:omniproxy/state/providers.dart';
 
@@ -269,4 +272,174 @@ void main() {
       isTrue,
     );
   });
+
+  testWidgets('dashboard defaults target to the favorite and honors the selector',
+      (tester) async {
+    final client = MockApiClient(connectDelay: const Duration(milliseconds: 50));
+    await tester.pumpWidget(buildApp(client: client));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(DashboardScreen)));
+    const tokyo = '00000000-0000-4000-8000-000000000001';
+    const frankfurt = '00000000-0000-4000-8000-000000000002';
+
+    // The favorite server is the default connect target.
+    expect(container.read(selectedServerProvider), tokyo);
+
+    // Switching the dropdown re-targets the connection.
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Frankfurt Shadowsocks').last);
+    await tester.pumpAndSettle();
+    expect(container.read(selectedServerProvider), frankfurt);
+
+    // Connecting uses the newly selected server, not the favorite.
+    await tester.tap(find.text('Connect'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pumpAndSettle();
+    expect(container.read(connectionProvider).session?.serverId, frankfurt);
+  });
+
+  testWidgets('servers tab highlights selected server and Select re-targets',
+      (tester) async {
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Servers'));
+    await tester.pumpAndSettle();
+
+    // The favorite (Tokyo Relay) is selected by default.
+    final tokyoCard =
+        find.ancestor(of: find.text('Tokyo Relay'), matching: find.byType(Card));
+    expect(
+      find.descendant(of: tokyoCard, matching: find.byIcon(Icons.check_circle)),
+      findsOneWidget,
+    );
+
+    // Select Frankfurt Shadowsocks via its card menu.
+    final frankfurtCard = find.ancestor(
+        of: find.text('Frankfurt Shadowsocks'), matching: find.byType(Card));
+    await tester.tap(find.descendant(
+        of: frankfurtCard, matching: find.byType(PopupMenuButton<String>)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Select server'));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(ServersScreen)));
+    expect(container.read(selectedServerProvider),
+        '00000000-0000-4000-8000-000000000002');
+    expect(
+      find.descendant(
+          of: frankfurtCard, matching: find.byIcon(Icons.check_circle)),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('logs tab live-updates while viewing without manual refresh',
+      (tester) async {
+    final client = MockApiClient(connectDelay: const Duration(milliseconds: 50));
+    await tester.pumpWidget(buildApp(client: client));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Logs'));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(LogsScreen)));
+    final before = container.read(logsProvider).length;
+
+    // Drive a connect externally while the Logs tab is on screen.
+    final connectFuture = container
+        .read(connectionProvider.notifier)
+        .connect('00000000-0000-4000-8000-000000000002');
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('Connecting to'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 80));
+    await connectFuture;
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Connected to'), findsOneWidget);
+    expect(container.read(logsProvider).length, greaterThan(before));
+  });
+
+  testWidgets('logs clear is durable: refresh does not resurrect cleared logs',
+      (tester) async {
+    final client = MockApiClient(connectDelay: const Duration(milliseconds: 50));
+    await tester.pumpWidget(buildApp(client: client));
+    await tester.pumpAndSettle();
+
+    // Connect to seed log entries through the mock.
+    await tester.tap(find.text('Connect'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pumpAndSettle();
+    expect(find.text('Connected'), findsWidgets);
+
+    await tester.tap(find.text('Logs'));
+    await tester.pumpAndSettle();
+
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(LogsScreen)));
+    expect(container.read(logsProvider), isNotEmpty);
+    final clearedCount = container.read(logsProvider).length;
+
+    await tester.tap(find.byIcon(Icons.delete_sweep_outlined));
+    await tester.pump();
+    expect(container.read(logsProvider), isEmpty);
+
+    // Refresh must not resurrect cleared entries.
+    await tester.tap(find.byIcon(Icons.refresh));
+    await tester.pumpAndSettle();
+    expect(container.read(logsProvider), isEmpty,
+        reason: 'cleared logs must not reappear on refresh');
+
+    // New activity after clearing still streams in live.
+    final disconnectFuture =
+        container.read(connectionProvider.notifier).disconnect();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await disconnectFuture;
+    await tester.pumpAndSettle();
+    expect(container.read(logsProvider).length, lessThan(clearedCount));
+    expect(find.text('Disconnected'), findsWidgets);
+  });
+
+  testWidgets('logs strip ANSI escape codes from messages', (tester) async {
+    final entry = LogEntry(
+      seq: 1,
+      timestamp: DateTime.now().toUtc(),
+      level: LogLevel.info,
+      component: 'vpn',
+      message: '\x1b[32mConnected to Tokyo Relay\x1b[0m',
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          logsProvider.overrideWith(() => _StaticLogsNotifier([entry])),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(body: LogsScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connected to Tokyo Relay'), findsOneWidget);
+    expect(find.textContaining('\x1b['), findsNothing);
+  });
+}
+
+/// Fixed-view log notifier for tests that want to seed exact entries.
+class _StaticLogsNotifier extends LogsNotifier {
+  _StaticLogsNotifier(this.entries);
+
+  final List<LogEntry> entries;
+
+  @override
+  List<LogEntry> build() => entries;
 }

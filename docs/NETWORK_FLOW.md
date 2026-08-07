@@ -52,9 +52,10 @@ hard-wired `final: proxy` hop.
 ### 2.1 The request chain (Dart → Go)
 
 1. **UI.** The dashboard's connect button (`app/lib/features/dashboard/dashboard_screen.dart:328-394`)
-   calls `_connect` (`dashboard_screen.dart:75-85`), which picks the target
-   server (favorite first, else first) and calls
-   `ConnectionNotifier.connect` (`app/lib/state/providers.dart:161-165`).
+   calls `_connect` (`dashboard_screen.dart:75-85`), which targets the
+   user-selected server from `selectedServerProvider` (defaulting to the
+   favorite, else the first; see `app/lib/state/providers.dart:124-159`) and
+   calls `ConnectionNotifier.connect` (`app/lib/state/providers.dart:161-165`).
 2. **ApiClient.** `BridgeApiClient.connect` frames the contract call
    `{"serverId","mode"}` (`app/lib/core/bridge_api_client.dart:94-99`). The
    mode defaults to the persisted `AppSettings.connectionMode` in the UI
@@ -142,9 +143,10 @@ Events are **polled, not pushed** on every transport (contract
    (`app/lib/state/providers.dart:152-159`). The dashboard re-renders the status
    hero / server card (`dashboard_screen.dart:18-65`).
 
-Log lines follow the same path: `logSink` publishes every redacted entry as a
-`logAppended` event (`core/core.go:421-426`), the `logsProvider` appends it and
-dedupes by `seq` (`providers.dart:207-214`), and the Logs screen backfills with
+Log lines follow the same path: `logSink` publishes every redacted, ANSI-stripped
+entry as a `logAppended` event (`core/core.go:421-426`), the `logsProvider`
+appends it live (no manual refresh needed while the tab is open) and dedupes by
+`seq` (`providers.dart:207-214`), and the Logs screen backfills with
 `getLogs` (`core/core.go:355-360`, `providers.dart:192-205`).
 
 ```mermaid

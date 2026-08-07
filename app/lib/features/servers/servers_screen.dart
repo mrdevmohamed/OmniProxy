@@ -39,6 +39,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
   @override
   Widget build(BuildContext context) {
     final servers = ref.watch(serversProvider);
+    final selectedId = ref.watch(selectedServerProvider);
     return SafeArea(
       child: Center(
         child: ConstrainedBox(
@@ -146,7 +147,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
                   ],
                 ),
               ),
-              Expanded(child: _buildBody(context, servers)),
+              Expanded(child: _buildBody(context, servers, selectedId)),
             ],
           ),
         ),
@@ -233,6 +234,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
   Widget _buildBody(
     BuildContext context,
     AsyncValue<List<ServerProfile>> servers,
+    String? selectedId,
   ) {
     return servers.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -265,7 +267,11 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
             final server = list[index];
             return _ServerCard(
               server: server,
+              selected: server.id == selectedId,
               onTap: () => _openEditor(server: server),
+              onSelect: () => ref
+                  .read(selectedServerProvider.notifier)
+                  .select(server.id),
               onTestLatency: () => _testLatency(server),
               onToggleFavorite: () =>
                   ref.read(serversProvider.notifier).toggleFavorite(server.id),
@@ -481,7 +487,9 @@ class _EmptyState extends StatelessWidget {
 class _ServerCard extends StatelessWidget {
   const _ServerCard({
     required this.server,
+    required this.selected,
     required this.onTap,
+    required this.onSelect,
     required this.onTestLatency,
     required this.onToggleFavorite,
     required this.onToggleEnabled,
@@ -491,7 +499,11 @@ class _ServerCard extends StatelessWidget {
   });
 
   final ServerProfile server;
+
+  /// Whether this server is the current connect target.
+  final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onSelect;
   final VoidCallback onTestLatency;
   final VoidCallback onToggleFavorite;
   final VoidCallback onToggleEnabled;
@@ -519,6 +531,9 @@ class _ServerCard extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: scheme.primaryContainer,
                     borderRadius: BorderRadius.circular(10),
+                    border: selected
+                        ? Border.all(color: scheme.primary, width: 2)
+                        : null,
                   ),
                   alignment: Alignment.center,
                   child: Text(
@@ -545,6 +560,11 @@ class _ServerCard extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
+                          if (selected) ...[
+                            const SizedBox(width: 6),
+                            Icon(Icons.check_circle,
+                                size: 16, color: scheme.primary),
+                          ],
                           if (server.favorite) ...[
                             const SizedBox(width: 6),
                             const Icon(Icons.star,
@@ -587,6 +607,7 @@ class _ServerCard extends StatelessWidget {
                 PopupMenuButton<String>(
                   tooltip: 'Server actions',
                   onSelected: (action) => switch (action) {
+                    'select' => onSelect(),
                     'test' => onTestLatency(),
                     'favorite' => onToggleFavorite(),
                     'enable' => onToggleEnabled(),
@@ -596,6 +617,18 @@ class _ServerCard extends StatelessWidget {
                     _ => null,
                   },
                   itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'select',
+                      child: ListTile(
+                        leading: Icon(selected
+                            ? Icons.check_circle
+                            : Icons.radio_button_unchecked),
+                        title:
+                            Text(selected ? 'Selected server' : 'Select server'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                    const PopupMenuDivider(),
                     const PopupMenuItem(
                       value: 'test',
                       child: ListTile(

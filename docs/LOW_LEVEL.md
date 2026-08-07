@@ -509,6 +509,12 @@ The pipeline (Linux): helper log line → socket `event` message
 (helperhost.go:160-167) → client `readLoop` → `logger.Log(..., "engine", ...)`
 (helper_client.go:249-253) → redacted before any sink. The core's own log
 sinks publish `logAppended` (core.go:424-426), which is what crosses to Dart.
+The ring assigns each entry its `Seq` (`ring.go:28-42`), and the logger
+propagates it onto the entry *before* fanning out to sinks
+(`logger.go:151-162`) — so `logAppended` events carry the same seq used by
+`getLogs(afterSeq)` and the UI can dedupe incremental pulls against the live
+stream (a sink receiving `Seq:0` broke that, silently dropping every live
+entry in the viewer).
 
 Known coverage limits (see §11):
 

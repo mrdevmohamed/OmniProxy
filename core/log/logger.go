@@ -135,7 +135,7 @@ func (l *Logger) log(lv models.LogLevel, component, message string, ctx map[stri
 		return
 	}
 
-	message = l.redactor.Redact(message)
+	message = l.redactor.Redact(stripANSI(message))
 	if len(ctx) > 0 {
 		rc := make(map[string]any, len(ctx))
 		for k, v := range ctx {
@@ -151,7 +151,10 @@ func (l *Logger) log(lv models.LogLevel, component, message string, ctx map[stri
 		Message:   message,
 		Context:   ctx,
 	}
-	l.ring.Append(entry)
+	// RingBuffer.Append assigns the sequence number to its own copy and
+	// returns it; propagate it onto the entry so sinks (the event bridge)
+	// emit logAppended events that carry a valid Seq for incremental pulls.
+	entry.Seq = l.ring.Append(entry)
 
 	l.mu.RLock()
 	sinks := append([]Sink(nil), l.sinks...)

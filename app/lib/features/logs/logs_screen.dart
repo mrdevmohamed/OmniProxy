@@ -149,7 +149,7 @@ class _LogRow extends StatelessWidget {
                       ?.copyWith(color: theme.colorScheme.primary),
                 ),
                 Text(
-                  entry.message,
+                  _stripAnsi(entry.message),
                   style: theme.textTheme.bodyMedium
                       ?.copyWith(fontFamily: 'monospace'),
                 ),
@@ -218,4 +218,35 @@ extension on LogLevel {
         LogLevel.warn => const Color(0xFFE6A23C),
         LogLevel.error => const Color(0xFFF56C6C),
       };
+}
+
+/// Removes ANSI/VT escape sequences from a log message so renderers never
+/// display control characters. The core strips these at the source; this is a
+/// defensive fallback for older buffered entries or third-party sources.
+String _stripAnsi(String s) {
+  final buffer = StringBuffer();
+  var i = 0;
+  while (i < s.length) {
+    final rune = s.codeUnitAt(i);
+    if (rune != 0x1B) {
+      buffer.writeCharCode(rune);
+      i++;
+      continue;
+    }
+    // ESC found: consume the escape sequence (CSI: ESC [ ... final byte).
+    i++;
+    if (i >= s.length) break;
+    final next = s.codeUnitAt(i);
+    if (next == 0x5B) {
+      i++;
+      while (i < s.length) {
+        final c = s.codeUnitAt(i);
+        i++;
+        if (c >= 0x40 && c <= 0x7E) break;
+      }
+    } else {
+      i++; // two-byte sequence
+    }
+  }
+  return buffer.toString();
 }

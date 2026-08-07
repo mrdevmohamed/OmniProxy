@@ -219,12 +219,59 @@ class LogsNotifier extends Notifier<List<LogEntry>> {
     }
   }
 
-  /// Re-fetch recent entries from core (e.g. after clearing).
+  /// Re-sync from the sequence watermark, recovering any events missed by the
+  /// live stream. The watermark is monotonic, so a refresh never resurrects
+  /// entries the user has cleared and never duplicates entries already shown.
   Future<void> refresh() async {
-    state = const [];
-    _lastSeq = 0;
     await _seed();
   }
 
-  void clear() => state = const [];
+  /// Clear the visible list. Advances the sequence watermark past everything
+  /// currently shown, so cleared entries do not reappear on a refresh or via
+  /// late `logAppended` deliveries; only genuinely new logs are shown after.
+  void clear() {
+    if (state.isNotEmpty) {
+      _lastSeq = state.last.seq;
+    }
+    state = const [];
+  }
+}
+
+/// The server the user has chosen as the connect target, shown on the
+/// dashboard and used by quick connect. Defaults to the favorite server
+/// (else the first). The selection re-anchors automatically when the catalog
+/// changes: a still-present choice is kept, a deleted choice falls back to
+/// the default, an empty catalog yields null.
+final selectedServerProvider =
+    NotifierProvider<SelectedServerNotifier, String?>(SelectedServerNotifier.new);
+
+class SelectedServerNotifier extends Notifier<String?> {
+  @override
+  String? build() {
+    // Re-anchor the selection whenever the catalog changes, without
+    // rebuilding the provider (rebuild would discard the user's choice).
+    ref.listen(serversProvider, (_, next) {
+      final servers = next.value;
+      final current = state;
+      if (current != null && servers?.any((s) => s.id == current) == true) {
+        return;
+      }
+      state = defaultSelection(servers);
+    });
+    return defaultSelection(ref.read(serversProvider).value);
+  }
+
+  static String? defaultSelection(List<ServerProfile>? servers) {
+    if (servers == null || servers.isEmpty) return null;
+    return servers.firstWhere((s) => s.favorite, orElse: () => servers.first).id;
+  }
+
+  void select(String? id) {
+    if (id == null) {
+      state = null;
+      return;
+    }
+    final servers = ref.read(serversProvider).value ?? const [];
+    if (servers.any((s) => s.id == id)) state = id;
+  }
 }

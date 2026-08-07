@@ -58,6 +58,32 @@ func TestRingBufferDropsOldest(t *testing.T) {
 	}
 }
 
+// TestLoggerSinksReceiveSequencedEntries guards the live logAppended path:
+// sinks must receive entries whose Seq matches the ring-assigned sequence so
+// the bridge event carries a valid seq (regression: sinks got Seq=0 and the
+// UI's incremental log viewer dropped every live entry).
+func TestLoggerSinksReceiveSequencedEntries(t *testing.T) {
+	got := make(chan models.LogEntry, 4)
+	l := NewLogger(models.LevelInfo, sinkFunc(func(e models.LogEntry) { got <- e }))
+	for i := 0; i < 3; i++ {
+		l.Infof("vpn", "msg %d", i)
+	}
+	for i := 0; i < 3; i++ {
+		select {
+		case e := <-got:
+			if e.Seq != uint64(i+1) {
+				t.Fatalf("sink entry %d: Seq=%d, want %d", i, e.Seq, i+1)
+			}
+		default:
+			t.Fatalf("sink received only %d of 3 entries", i)
+		}
+	}
+}
+
+type sinkFunc func(models.LogEntry)
+
+func (f sinkFunc) Write(e models.LogEntry) { f(e) }
+
 func TestLoggerRedactsMessageAndContext(t *testing.T) {
 	l := NewNopLogger()
 	l.Redactor().Add("SuperSecretToken")
@@ -79,5 +105,38 @@ func TestLoggerRedactsMessageAndContext(t *testing.T) {
 	}
 	if nested := e.Context["nested"].(map[string]any); strings.Contains(nested["key"].(string), "SuperSecretToken") {
 		t.Fatalf("nested context leaked: %+v", e.Context)
+	}
+}
+
+func TestLoggerStripsANSIFromMessage(t *testing.T) {
+	l := NewNopLogger()
+	l.Infof("vpn", "\x1b[32minfo\x1b[0m inbound/upstream established")
+	entries := l.LogsAfter(0, 1)
+	if len(entries) != 1 {
+		t.Fatal("expected one entry")
+	}
+	if got := entries[0].Message; got != "info inbound/upstream established" {
+		t.Fatalf("ANSI not stripped: %q", got)
+	}
+}
+
+func TestStripANSI(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"plain message", "plain message"},
+		{"\x1b[36mcyan\x1b[0m", "cyan"},
+		{"\x1b[1;31m bold red \x1b[m", " bold red "},
+		{"conn \x1b[90m1234\x1b[0m", "conn 1234"},
+		{"osc \x1b]0;title\x07here", "osc here"},
+		{"\x1b7two-byte dropped", "two-byte dropped"}, // ESC 7 (DECSC) skipped
+		{"\x1b8 also dropped", " also dropped"},       // ESC 8 (DECRC) skipped
+		{"trailing escape \x1b", "trailing escape "},
+		{"multi\x1b[32m-\x1b[0mword", "multi-word"},
+	}
+	for _, c := range cases {
+		if got := stripANSI(c.in); got != c.want {
+			t.Errorf("stripANSI(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

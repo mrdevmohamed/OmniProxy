@@ -376,7 +376,7 @@ The connection state machine lives entirely in the app process (`core/vpn/servic
 
 Engine logs originate in the helper process. The helper's `logSink` is wired into `engine.Engine` as the `PlatformLogWriter` (`engine/engine.go:60`, `engine/log.go:48-57`), so every sing-box log line becomes a `{"type":"event","event":{level,message}}` message on the socket (`helperhost.go:158-167`). The client `readLoop` detects `msg.Type == "event"` and feeds it into the core's redacting logger under component `"engine"` (`helper_client.go:249-253`). From there it enters the **same** pipeline as every other log:
 
-1. `logger.Log` redacts and appends to the log ring buffer, then fans out to sinks (`core/log/logger.go:130-162`).
+1. `logger.Log` strips ANSI escapes (sing-box's formatter colorizes even platform-writer output), redacts, and appends to the log ring buffer, then fans out to sinks (`core/log/logger.go:130-162`; `core/log/ansi.go`). The engine adapter maps sing-box's level enum onto the engine's reversed-order enum explicitly (`engine/log.go:60-83`) — a raw numeric cast would swap every severity (INFO→WARN, ERROR→INFO).
 2. The core's `logSink` publishes a `logAppended` event on the `EventBus` (`core/core.go:421-425`; `core/api/events.go:65-76`).
 3. `facadeSink` gates on subscription state and hands it to the registered transport sink (`core/core.go:404-419`).
 4. The transport sink is the glue's `enqueueEvent`, which pushes into the 512-cap event ring (`core/glue/glue.go:110,143,47`).

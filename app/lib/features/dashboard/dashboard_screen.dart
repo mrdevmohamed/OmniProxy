@@ -17,10 +17,19 @@ class DashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final connection = ref.watch(connectionProvider);
     final servers = ref.watch(serversProvider);
+    final selectedId = ref.watch(selectedServerProvider);
     final session = connection.session;
     final server = session == null
         ? null
         : servers.value?.where((s) => s.id == session.serverId).firstOrNull;
+
+    // Defensive: fall back to the first catalog entry while the selection
+    // provider re-anchors (avoids a blank/asserting dropdown mid-frame).
+    final available = servers.value ?? const <ServerProfile>[];
+    final selectorId =
+        (selectedId != null && available.any((s) => s.id == selectedId))
+            ? selectedId
+            : available.firstOrNull?.id;
 
     return SafeArea(
       child: Center(
@@ -43,17 +52,25 @@ class DashboardScreen extends ConsumerWidget {
                       ? session.startedAt
                       : null,
                 )
-              else
+              else if (servers.value == null)
+                _PlaceholderCard(state: connection.state, serverCount: 1)
+              else if (available.isEmpty)
                 _PlaceholderCard(
                   state: connection.state,
-                  serverCount: servers.value?.length ?? 0,
+                  serverCount: 0,
                   onNavigateToServers: onNavigateToServers,
+                )
+              else
+                _ServerSelectorCard(
+                  servers: available,
+                  selectedId: selectorId,
+                  onSelected: (id) =>
+                      ref.read(selectedServerProvider.notifier).select(id),
                 ),
               const SizedBox(height: 20),
               _ConnectButton(
                 state: connection.state,
-                targetServerId: server?.id ??
-                    _preferredServerId(servers.value),
+                targetServerId: server?.id ?? selectorId,
                 onConnect: () => _connect(ref),
                 onDisconnect: () => ref.read(connectionProvider.notifier).disconnect(),
               ),
@@ -64,23 +81,12 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
 
-  String? _preferredServerId(List<ServerProfile>? servers) {
-    if (servers == null || servers.isEmpty) return null;
-    return servers.firstWhere(
-      (s) => s.favorite,
-      orElse: () => servers.first,
-    ).id;
-  }
-
   Future<void> _connect(WidgetRef ref) async {
     final servers = ref.read(serversProvider).value ?? const [];
     if (servers.isEmpty) return;
     final session = ref.read(connectionProvider).session;
-    final target = session?.serverId ??
-        servers.firstWhere(
-          (s) => s.favorite,
-          orElse: () => servers.first,
-        ).id;
+    final target = session?.serverId ?? ref.read(selectedServerProvider);
+    if (target == null) return;
     await ref.read(connectionProvider.notifier).connect(target);
   }
 }
@@ -287,6 +293,66 @@ class _PlaceholderCard extends StatelessWidget {
             ),
             if (serverCount == 0)
               TextButton(onPressed: onNavigateToServers, child: const Text('Add server')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ServerSelectorCard extends StatelessWidget {
+  const _ServerSelectorCard({
+    required this.servers,
+    required this.selectedId,
+    required this.onSelected,
+  });
+
+  final List<ServerProfile> servers;
+  final String? selectedId;
+  final ValueChanged<String?> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.cloud_outlined, color: scheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Choose a server to connect.',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            DropdownButton<String>(
+              value: selectedId,
+              isExpanded: true,
+              underline: const SizedBox.shrink(),
+              borderRadius: BorderRadius.circular(12),
+              icon: Icon(Icons.keyboard_arrow_down, color: scheme.onSurfaceVariant),
+              items: [
+                for (final s in servers)
+                  DropdownMenuItem(
+                    value: s.id,
+                    child: Text(
+                      s.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall,
+                    ),
+                  ),
+              ],
+              onChanged: onSelected,
+            ),
           ],
         ),
       ),
