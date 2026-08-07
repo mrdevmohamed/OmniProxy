@@ -33,11 +33,18 @@ class VpnProxyService : Service() {
             startForeground(Notifications.NOTIFICATION_ID, notification)
         }
         Bridge.proxyServiceActive = true
-        return START_STICKY
+        // Explicitly started and stopped host; never let the system recreate it.
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        val wasActive = Bridge.proxyServiceActive
         Bridge.proxyServiceActive = false
+        // A destroy that is not the tail of a clean disconnect (system kill,
+        // forced stop) leaves the core running; stop it best-effort.
+        if (wasActive) {
+            Bridge.requestCoreDisconnect()
+        }
         super.onDestroy()
     }
 

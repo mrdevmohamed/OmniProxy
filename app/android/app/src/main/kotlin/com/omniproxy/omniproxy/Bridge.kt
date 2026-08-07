@@ -13,6 +13,8 @@ import com.omniproxy.bind.mobile.Mobile
 import com.omniproxy.bind.mobile.SocketProtector
 import io.flutter.plugin.common.MethodChannel
 import java.net.NetworkInterface
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,6 +22,8 @@ import org.json.JSONObject
  * Pure-transport host for the gomobile bindings (`docs/api-contract.md` §5.1).
  *
  * - `request` runs on a background thread (the Go call blocks its caller);
+ * - `connect`/`disconnect` run on a single serialized lifecycle executor so a
+ *   disconnect can never race an in-flight connect;
  * - events are drained from the Go ring on a poller thread and forwarded to
  *   Dart over `MethodChannel("com.omniproxy/events")` as `invokeMethod("event")`;
  * - `setTunFd` hands the VpnService TUN fd into Go before a VPN-mode connect.
@@ -54,6 +58,27 @@ object Bridge {
 
     @Volatile
     var proxyServiceActive = false
+
+    /** Single worker for connect/disconnect lifecycle requests. The Go calls
+     * block, so executing them on one thread guarantees they reach the core in
+     * submission order — a disconnect queued behind a connect runs only after
+     * that connect has completed, never while it is starting. */
+    private val lifecycleExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "omniproxy-lifecycle").apply { isDaemon = true }
+    }
+
+    /** Generation counter bumped on every requested disconnect. A queued connect
+     * compares its intent-time snapshot against it and aborts when it has
+     * changed: the executor FIFO alone cannot express "a connect that landed
+     * before this disconnect must not start the core after it". */
+    private val disconnectCount = AtomicInteger(0)
+
+    /** Disconnect generation captured when a connect intent starts (tap time).
+     * VPN-mode connects reach the core only after consent + TUN establishment,
+     * so the snapshot must be taken when the user asked to connect, not when the
+     * queued task runs. */
+    @Volatile
+    private var connectGeneration = 0
 
     @Synchronized
     fun ensureInit(context: Context) {
@@ -236,6 +261,110 @@ object Bridge {
         }.start()
     }
 
+    /**
+     * Marks the start of a connect intent. Called synchronously when the user
+     * requests a connect; the generation snapshot is used by [submitConnect] so
+     * a connect aborts if a disconnect was requested while the intent was still
+     * en route to the core (VpnService consent / TUN establishment).
+     */
+    fun recordConnectIntent() {
+        connectGeneration = disconnectCount.get()
+    }
+
+    /**
+     * Queues a `connect` on the serialized lifecycle executor. If a disconnect
+     * was requested after this connect's intent started (see
+     * [recordConnectIntent]), it aborts instead of starting the core (the
+     * executor would otherwise run it after the disconnect and leave the engine
+     * running). The response is posted to [result] on the main thread; [onAbort]
+     * runs when the connect was superseded (release any claimed TUN fd);
+     * [onError] runs after an error result is posted (stop the hosting service).
+     */
+    fun submitConnect(
+        requestJson: String,
+        result: MethodChannel.Result?,
+        onAbort: () -> Unit = {},
+        onError: () -> Unit = {},
+    ) {
+        val generation = connectGeneration
+        lifecycleExecutor.execute {
+            val context = appContext
+            if (context == null) {
+                postToMain { result?.error("mobile", "core not initialized", null) }
+                return@execute
+            }
+            ensureInit(context)
+            if (generation != disconnectCount.get()) {
+                postToMain {
+                    onAbort()
+                    result?.error("vpn", "disconnect requested before connect completed", null)
+                }
+                return@execute
+            }
+            try {
+                val response = Mobile.request("connect", requestJson)
+                postToMain { result?.success(response) }
+            } catch (e: Exception) {
+                postToMain {
+                    result?.error("mobile", e.message ?: e.toString(), null)
+                    onError()
+                }
+            }
+        }
+    }
+
+    /**
+     * Queues a `disconnect` on the serialized lifecycle executor and bumps the
+     * disconnect generation so any pending connect aborts. [onDone] runs on the
+     * main thread after the core has confirmed the disconnect — the point at
+     * which it is safe to tear down the foreground host (VpnService/TUN last).
+     */
+    fun submitDisconnect(
+        requestJson: String,
+        result: MethodChannel.Result? = null,
+        onDone: () -> Unit = {},
+    ) {
+        disconnectCount.incrementAndGet()
+        lifecycleExecutor.execute {
+            val context = appContext
+            if (context == null) {
+                postToMain {
+                    result?.error("mobile", "core not initialized", null)
+                    onDone()
+                }
+                return@execute
+            }
+            ensureInit(context)
+            try {
+                val response = Mobile.request("disconnect", requestJson)
+                postToMain {
+                    result?.success(response)
+                    onDone()
+                }
+            } catch (e: Exception) {
+                postToMain {
+                    result?.error("mobile", e.message ?: e.toString(), null)
+                    onDone()
+                }
+            }
+        }
+    }
+
+    /** Best-effort serialized core disconnect for a hosting service torn down
+     * without a prior clean disconnect (system-initiated destroy, force stop).
+     * No-op against an idle core. */
+    fun requestCoreDisconnect() {
+        disconnectCount.incrementAndGet()
+        lifecycleExecutor.execute {
+            val context = appContext ?: return@execute
+            ensureInit(context)
+            try {
+                Mobile.request("disconnect", "{}")
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun shutdown() {
         try {
             Mobile.shutdown()
@@ -245,6 +374,8 @@ object Bridge {
         pollThread?.quitSafely()
         pollThread = null
         pollHandler = null
+        lifecycleExecutor.shutdownNow()
+        disconnectCount.set(0)
         initialized = false
     }
 

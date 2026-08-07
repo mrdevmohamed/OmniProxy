@@ -37,15 +37,16 @@ class MainActivity : FlutterActivity() {
     private fun handleCall(method: String, requestJson: String, result: MethodChannel.Result) {
         when (method) {
             "connect" -> handleConnect(requestJson, result)
-            "disconnect" -> {
-                Bridge.executeRequest(method, requestJson, result)
-                stopConnectionHosts()
-            }
+            "disconnect" -> handleDisconnect(requestJson, result)
             else -> Bridge.executeRequest(method, requestJson, result)
         }
     }
 
     private fun handleConnect(requestJson: String, result: MethodChannel.Result) {
+        // Snapshot the disconnect generation now: the core may only reach the
+        // task queue after VpnService consent + TUN establishment, and a
+        // disconnect requested meanwhile must supersede this connect.
+        Bridge.recordConnectIntent()
         val mode = try {
             JSONObject(requestJson).optString("mode", "")
         } catch (_: Exception) {
@@ -85,18 +86,40 @@ class MainActivity : FlutterActivity() {
         } else {
             startService(intent)
         }
-        Bridge.executeRequest("connect", requestJson, result)
+        Bridge.submitConnect(
+            requestJson,
+            result,
+            onError = { stopService(intent) },
+        )
     }
 
-    /** After a disconnect response, stop whichever host held the connection. */
+    /** Disconnect is serialized with any in-flight connect; the foreground host
+     * is torn down only after the core confirms it has stopped, so the TUN fd is
+     * released last (see OmniProxyVpnService.onDestroy). */
+    private fun handleDisconnect(requestJson: String, result: MethodChannel.Result) {
+        Bridge.submitDisconnect(requestJson, result) {
+            stopConnectionHosts()
+        }
+    }
+
+    /** After the core has fully stopped, stop whichever host held the
+     * connection. The active flags are cleared first so the services' onDestroy
+     * sees a clean teardown and does not re-trigger a core disconnect.
+     *
+     * The VpnService's TUN fd must be closed before stopService: the system
+     * binds to a VpnService and a bound service survives stopService until the
+     * fd closes (which is what releases the system binding and triggers the
+     * VPN teardown). Without this, onDestroy never runs and the foreground
+     * VPN keeps running after the core has disconnected. */
     private fun stopConnectionHosts() {
         if (Bridge.vpnServiceActive) {
-            stopService(Intent(this, OmniProxyVpnService::class.java))
             Bridge.vpnServiceActive = false
+            OmniProxyVpnService.releaseTun()
+            applicationContext.stopService(Intent(this, OmniProxyVpnService::class.java))
         }
         if (Bridge.proxyServiceActive) {
-            stopService(Intent(this, VpnProxyService::class.java))
             Bridge.proxyServiceActive = false
+            applicationContext.stopService(Intent(this, VpnProxyService::class.java))
         }
     }
 
