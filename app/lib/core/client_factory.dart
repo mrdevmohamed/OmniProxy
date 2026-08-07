@@ -4,6 +4,7 @@ import 'api_client.dart';
 import 'bridge/bridge_android.dart';
 import 'bridge/bridge_linux.dart';
 import 'bridge/bridge_transport.dart';
+import 'bridge/bridge_windows.dart';
 import 'bridge_api_client.dart';
 import 'mock_api_client.dart';
 
@@ -14,15 +15,15 @@ import 'mock_api_client.dart';
 ///   - Linux:  `dart:ffi` into `libomniproxy.so` (M6)
 ///   - Android: MethodChannel over gomobile bind (M7)
 ///   - Windows: `dart:ffi` into `omniproxy.dll` (M8)
-///
-/// Until the M8 transport lands, Windows falls back to the mock so the shell
-/// keeps running.
 ApiClient buildApiClient() {
   if (Platform.isAndroid) {
     return BridgeApiClient(AndroidBridge());
   }
   if (Platform.isLinux) {
     return BridgeApiClient(createLinuxTransport());
+  }
+  if (Platform.isWindows) {
+    return BridgeApiClient(createWindowsTransport());
   }
   return MockApiClient();
 }
@@ -39,6 +40,20 @@ BridgeTransport createLinuxTransport({
     initConfig: {
       'dataDir': ?dataDir,
       'helperPath': ?helperPath,
+    },
+  );
+}
+
+/// Creates the Windows transport with the init config (data dir). No helper —
+/// Windows runs the engine in-process. Overridable for tests.
+BridgeTransport createWindowsTransport({
+  String? libraryPath,
+  String? dataDir,
+}) {
+  return WindowsBridge(
+    libraryPath: libraryPath,
+    initConfig: {
+      'dataDir': ?dataDir,
     },
   );
 }

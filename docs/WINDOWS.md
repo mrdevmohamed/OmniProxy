@@ -1,17 +1,21 @@
 # WINDOWS — Platform Layer Deep Dive
 
-**Status:** Windows is the least-implemented platform in Phase 1. The core DLL
-cross-compiles and wintun is bundled, but the Flutter transport is a stub, the
-client falls back to the mock, and the Go glue still hardcodes Linux behavior.
-Everything marked **[plan]** is intended architecture, not code that runs today.
-Everything else is verified against the tree at commit `716eb93`.
+**Status:** the M8 bridge is now implemented: the glue is parameterized per
+platform (`core/glue/platform_{linux,windows}.go`), `bridge_windows.dart` is a
+real `dart:ffi` transport, `client_factory` routes Windows to it, and
+`app/windows/CMakeLists.txt` bundles `omniproxy.dll` + `wintun.dll` next to the
+exe. The Windows release bundle is built by CI (`.github/workflows/windows.yml`).
+**It has not yet been run on a real Windows host** — runtime verification
+(proxy/VPN connect, elevation, wintun, Credential Manager) is item 6 of §10.
+Everything marked **[plan]** is intended architecture, not code that runs today;
+everything else is verified against the tree at commit `716eb93` unless noted.
 
 ## 1. Purpose & scope
 
 This document covers the Windows platform layer of OmniProxy:
 
 - **Current state** — what exists today (DLL cross-compile, wintun bundling,
-  Flutter stub, mock fallback) and what the user actually experiences.
+  implemented dart:ffi bridge, CI build) and what the user actually experiences.
 - **Intended architecture** — `omniproxy.dll` (same c-shared ABI as Linux via
   `core/glue`) loaded through `dart:ffi`, wintun for VPN mode, in-process proxy
   mode, Windows Credential Manager/DPAPI for secrets.
@@ -31,41 +35,24 @@ connect/disconnect, embedded sing-box, Dashboard. Out of scope (Phase 1.5+ per
 
 ## 2. Current state — what exists today
 
-Windows is **not implemented**. It is the M8 placeholder: the DLL build
-artifacts exist, but no Windows bridge transport runs, and the app boots
-against the in-memory mock.
+Windows is **implemented but not yet run on a real host**. The DLL cross-build
+works, the FFI transport is wired, and the bundle is produced by CI; runtime
+behavior is unverified (item 6 of §10).
 
-### 2.1 The Flutter transport is a stub
+### 2.1 The Flutter transport is real
 
-`app/lib/core/bridge/bridge_windows.dart:7-22` defines `WindowsBridge implements
-BridgeTransport`, but:
+`app/lib/core/bridge/bridge_windows.dart` is a full `dart:ffi` transport — a
+near-clone of `bridge_linux.dart` with three differences: the library is
+`omniproxy.dll`, the default data dir is `%APPDATA%\OmniProxy`, and there is no
+`helperPath` (Windows runs the engine in-process). Same five-symbol C ABI, same
+15 ms poll timer, same `OMNIPROXY_LIB` override for tests (§4.1-§4.3).
 
-- `request()` throws `UnsupportedError('WindowsBridge lands in M8')`
-  (`bridge_windows.dart:10`).
-- the `events` getter throws the same `UnsupportedError`
-  (`bridge_windows.dart:15`).
-- `start()`/`stop()` are no-ops (`bridge_windows.dart:18-21`).
+### 2.2 The client factory constructs it
 
-The class doc comment (`bridge_windows.dart:6`) describes it as "code-complete
-in M8; documented untested on the Linux host" — i.e. the class exists to pin
-down the intended ABI, not to function.
-
-### 2.2 The client factory never constructs it — the app runs on the mock
-
-`app/lib/core/client_factory.dart:20-28`:
-
-- `Platform.isAndroid` → `BridgeApiClient(AndroidBridge())` (`:21-23`)
-- `Platform.isLinux` → `BridgeApiClient(createLinuxTransport())` (`:24-26`)
-- everything else, including Windows → `MockApiClient()` (`:27`)
-
-So on a Windows build today the user sees the full UI shell (Dashboard, Server
-Manager, Settings) running against `MockApiClient` — a faithful in-memory
-implementation of the contract (per `docs/FLUTTER.md:249`) — with seeded servers
-and simulated connect/latency delays. **No real connection is possible, no
-network traffic is tunneled, and nothing reaches the Go core at all.** The
-Windows Bridge is never constructed, so its `UnsupportedError` is effectively
-dead code unless a future test constructs it directly. This is the explicit M8
-placeholder, not a silent half-transport (`docs/ARCHITECTURE.md:388`).
+`app/lib/core/client_factory.dart` now routes `Platform.isWindows` →
+`BridgeApiClient(createWindowsTransport())`. The `MockApiClient()` fallback
+remains only for platforms with no bridge at all. A Windows build therefore
+talks to the real Go core through `omniproxy.dll`, not the mock.
 
 ### 2.3 The Go core DLL cross-compiles (the one M8 piece that is real)
 
@@ -82,31 +69,28 @@ requires `x86_64-w64-mingw32-gcc` (`Makefile:29,129-132`). `core/out/wintun.dll`
 (427,552 bytes, built 2021) was fetched by the `wintun` target
 (`Makefile:140-153`).
 
-**But the DLL that compiles is still Linux-shaped at runtime.** Three
-Linux-flavored assumptions are compiled into `core/glue/glue.go` (see §4.4) —
-they do not break the *build*, but they will misbehave on a Windows host.
+**The DLL that compiles is no longer Linux-shaped.** The glue's platform
+selection is now build-tagged (`core/glue/platform_{linux,windows}.go`, §4.4):
+on Windows it reports `platform: "windows"` and uses `NewInProcessRunner` for
+both modes; the data-dir fallback uses `os.UserConfigDir()`. See §4.4.
 
-### 2.4 The Windows Flutter runner is stock
+### 2.4 The Windows Flutter runner now bundles the bridge
 
-`app/windows/` is the standard `flutter create` scaffold: `CMakeLists.txt` +
-`runner/` (`flutter_window.cpp`, `win32_window.cpp`, `main.cpp`, `Runner.rc`,
-`runner.exe.manifest`). Unlike `app/linux/CMakeLists.txt:115-128`, which installs
-`libomniproxy.so` and `omniproxy-helper` into the bundle, **the Windows CMake
-has no OmniProxy glue** — no DLL install step, no wintun bundling
-(verified: the only matches for `dll`/`wintun`/`core/out` in
-`app/windows/CMakeLists.txt` are the `BINARY_NAME "omniproxy"` at `:7` and the
-project name at `:3`). `flutter-windows` refuses to run on a Linux host
-(`Makefile:156-160`), so the app bundle must be produced on Windows or CI.
+`app/windows/CMakeLists.txt` installs `omniproxy.dll` (and `wintun.dll`) next to
+the executable from `core/out`, mirroring `app/linux/CMakeLists.txt:115-128`
+(guards keep a plain `flutter build windows` working when the core artifacts are
+absent). `flutter-windows` still refuses to run on a Linux host
+(`Makefile:156-160`), so the app bundle is produced on Windows or CI — the
+workflow at `.github/workflows/windows.yml` builds both core artifacts and the
+bundle on `windows-latest`.
 
 ### 2.5 What the user experiences today
 
-On a Windows machine, `flutter build windows --release` would produce a working
-Flutter shell whose every screen talks to the in-memory mock. Connect buttons
-animate through simulated states; no OS integration, no wintun, no VPN, no
-secure storage. There is no UI surfacing "this is a mock" — the limitation is
-documented (`docs/platform-notes.md:80` says Windows is "code-complete only;
-verify on a Windows machine or CI before release") but not yet surfaced in the
-app itself.
+A Windows build produced by CI (`flutter build windows --release` on
+`windows-latest`) boots against the real Go core through `omniproxy.dll`:
+proxy-mode connect runs in-process, VPN mode attempts wintun (elevation model
+still TBD, §5.4), credentials go to Credential Manager. Runtime behavior is
+**unverified on a real host** — item 6 of §10.
 
 ## 3. Intended architecture
 
@@ -220,47 +204,38 @@ This reasoning is identical on Windows; reuse it wholesale. See
   `DynamicLibrary.open` works the same on both; on Windows the DLL must be in
   the search path (next to `omniproxy.exe`, or via an absolute path
   `%APPDATA%`/install dir). `bridge_linux.dart:148-156` reads an
-  `OMNIPROXY_LIB` override — keep the same knob for Windows.
+  `OMNIPROXY_LIB` override — `bridge_windows.dart` keeps the same knob.
 - **Default data dir** — Linux computes `~/.config/omniproxy`
-  (`bridge_linux.dart:158-163`); Windows must pass `%APPDATA%\OmniProxy`
-  (`docs/platform-notes.md:79`). `dart:io` `Platform.environment['APPDATA']`.
-  The Windows bridge should always pass `dataDir` explicitly, because the
-  glue's own fallback is Linux-only (§4.4).
+  (`bridge_linux.dart:158-163`); Windows passes `%APPDATA%\OmniProxy`
+  (`docs/platform-notes.md:79`) from `Platform.environment['APPDATA']`. The
+  bridge still passes `dataDir` explicitly; the glue fallback is also correct
+  now (§4.4 item 3).
 - **No `helperPath`** — Linux passes the `omniproxy-helper` binary path
   (`bridge_linux.dart:165-175`); Windows has no helper, so the key is omitted.
 - **`client_factory.dart:20-28`** must be extended to route `Platform.isWindows`
   to `BridgeApiClient(WindowsBridge(...))` instead of `MockApiClient()`.
+  *Implemented: `client_factory.dart` routes Windows to `createWindowsTransport()`.*
 
-### 4.4 The glue must stop being Linux-flavored before it ships
+### 4.4 The glue is parameterized per platform (implemented)
 
-These are real gaps in `core/glue/glue.go` — they compile for Windows but are
-wrong at runtime:
+The three Linux-flavored assumptions in `core/glue/glue.go` are resolved with
+**build tags** (`docs/platform-notes.md` §Windows):
 
-1. **Hardcoded platform string.** `glue.go:94` passes `Platform: "linux"` to
-   `core.New`. The facade reports it verbatim in `getVersion`
-   (`core/core.go:216`), so a Windows build would answer
-   `platform: "linux"` (`docs/api-contract.md:142`). Fix: parameterize the
-   platform (build tag, or a field in the init `config_json`) and pass
-   `"windows"`. Android's gomobile entry does exactly this with a hardcoded
-   `Platform: "android"` (`core/mobile/mobile.go:151`).
-2. **The Linux helper runner is wired unconditionally.** `glue.go:92` builds
-   `tunnel.NewHelperAwareRunner(logger, tunnel.NewHelperSpawner(cfg.HelperPath))`.
-   In VPN mode this runner spawns `pkexec` (`core/tunnel/helper_client.go:56`),
-   dials a Unix socket (`helper_client.go:222`), and computes the socket path
-   from `$XDG_RUNTIME_DIR` or `/tmp` (`core/tunnel/helper_proto.go:25-35`).
-   None of that exists on Windows; a VPN connect would fail instead of using
-   wintun. Windows must use `tunnel.NewInProcessRunner` for **both** modes —
-   the same choice the Android entry makes (`core/mobile/mobile.go:137`), where
-   wintun would be created by the engine in-process. This is the single most
-   important change the M8 "code-complete" claim overlooks.
-3. **`defaultDataDir` is XDG-shaped.** `glue.go:59-69` falls back to
-   `$XDG_CONFIG_HOME/omniproxy` / `~/.config/omniproxy`. On Windows it should be
-   `%APPDATA%` (`os.UserConfigDir()` already returns the right dir per platform,
-   as used by `core/mobile/mobile.go:129-133`). The Dart bridge passing
-   `dataDir` explicitly mitigates this, but the fallback is still wrong.
+1. **Platform string.** `core/glue/platform_{linux,windows}.go` return
+   `platformName()` (`"linux"` / `"windows"`), passed as `Platform` to
+   `core.New`; `getVersion` reports it verbatim (`core/core.go:216`).
+2. **Runner selection.** `newRunner(logger, helperPath)` is also per-tag:
+   Linux uses `tunnel.NewHelperAwareRunner` (pkexec/Unix socket for VPN mode);
+   Windows uses `tunnel.NewInProcessRunner` for **both** modes — the same
+   choice the Android entry makes (`core/mobile/mobile.go:137`), leaving wintun
+   creation to the engine in-process. `helperPath` in the init config is Linux
+   only and ignored on Windows.
+3. **Data-dir fallback.** `defaultDataDir()` now uses `os.UserConfigDir()`
+   (`%APPDATA%\OmniProxy` on Windows), matching `core/mobile/mobile.go:129-133`.
+   The Dart bridge still passes `dataDir` explicitly.
 
-These are **[plan]** fixes with an open question on how to parameterize (build
-tag vs init-config field) — see §10.
+A `GOOS=windows` c-shared cross-build of the glue is part of `make go-check`
+(`go-check-windows`), so a regression in the tagged files fails on a Linux host.
 
 ## 5. wintun & VPN mode
 
@@ -462,61 +437,59 @@ account (Phase 1.5 service), the credential scope must be revisited — **[open]
 | **Defender Firewall prompts** | First outbound tunnel connection and the loopback mixed inbound may trigger SmartScreen/Firewall prompts for `omniproxy.exe`; wintun adapter traffic can be flagged on non-domain networks. | UX + install docs; not code. |
 | **IPv6 on Windows networking** | IPv6 handling is engine-level and platform-neutral (`engine/config.go:111-137`); winipcfg applies the v6 address. Windows IPv6 dual-stack behavior under wintun is unverified. | Verify; no code expected. |
 | **Two wintun.dll copies** | Bundled `core/out/wintun.dll` is byte-identical to sing-tun's embedded copy (verified §5.4). No conflict, but redundant. | Decide whether to keep bundling. |
-| **Platform string wrong** | `getVersion` would report `linux` on Windows (`glue.go:94` → `core/core.go:216`). | Must fix with the runner fix. |
-| **Mock on Windows** | The whole app runs against `MockApiClient` (`client_factory.dart:27`); no real connect possible, and no UI surfacing that it's a mock. | Fix is `client_factory` + `WindowsBridge` (§4.1/§4.3). |
-| **Untestable on Linux host** | `flutter-windows` refuses to run off Windows (`Makefile:156-160`); `flutter build windows` needs a Windows host/CI. | Plan for a Windows CI runner for M8 verification. |
+| **Platform string wrong** | ~~`getVersion` would report `linux` on Windows~~ — fixed by the build-tagged `platformName()` (`glue/platform_windows.go`). | **Closed.** |
+| **Mock on Windows** | ~~The whole app runs against `MockApiClient`~~ — fixed: `client_factory` routes Windows to `WindowsBridge`. | **Closed.** |
+| **Untestable on Linux host** | `flutter-windows` refuses to run off Windows (`Makefile:156-160`); `flutter build windows` needs a Windows host/CI. | `.github/workflows/windows.yml` builds the bundle on `windows-latest`; runtime verification still needs a real host (item 6 of §10). |
 | **Background service / start-with-system** | Deferred to Phase 1.5+ (`docs/platform-notes.md:77`); `startWithSystem` stored only (`docs/api-contract.md:105`). | Surface limitation in UI per `docs/platform-notes.md:77`. |
 
 ## 9. Milestone M8 scope
 
 Per `docs/implementation-plan.md:98`, M8 is **"Windows bridge — code-complete
-FFI + Wintun bundling; documented untested."** The confirmed deliverable is the
-**build validation**: `engine/tun_name.go`, `platform_fd.go`,
-`platform_monitor.go` gained `//go:build linux || android`, `core/mobile` is
-`//go:build android`, and `make windows-core` produces `omniproxy.dll` +
-`wintun.dll` via mingw-w64. The Flutter Windows app bundle still requires a
-Windows host/CI.
+FFI + Wintun bundling; documented untested."** That is now the implemented
+state:
 
-**What M8 does NOT include** (gaps against "Windows bridge"):
-- `bridge_windows.dart` still throws `UnsupportedError` (§2.1).
-- `client_factory` still falls back to the mock (§2.2).
-- The glue still hardcodes `Platform: "linux"` and the Linux helper runner
-  (§4.4) — so even a working DLL could not run VPN mode on Windows.
-- No Windows CMake install of `omniproxy.dll`/`wintun.dll` (§2.4).
-- No runtime verification on a Windows host (documented untested,
-  `docs/platform-notes.md:80`).
+- **Build validation (delivered previously):** `engine/tun_name.go`,
+  `platform_fd.go`, `platform_monitor.go` gained `//go:build linux || android`,
+  `core/mobile` is `//go:build android`, and `make windows-core` produces
+  `omniproxy.dll` + `wintun.dll` via mingw-w64. The tagged glue is additionally
+  cross-checked by `make go-check` (`go-check-windows`).
+- **Transport (delivered now):** `bridge_windows.dart` is a working `dart:ffi`
+  transport; `client_factory` routes Windows to it; `app/windows/CMakeLists.txt`
+  bundles `omniproxy.dll`/`wintun.dll`; the glue reports `"windows"` and uses
+  `NewInProcessRunner` (§4.4). The bundle is produced by
+  `.github/workflows/windows.yml` on `windows-latest`.
 
-"Code-complete" is therefore accurate only for the *build artifacts*; the
-*transport* is a stub and the *glue* is Linux-flavored. This doc's §10 is the
-work to close that gap.
+**What M8 still does NOT include:**
+- No runtime verification on a real Windows host (documented untested,
+  `docs/platform-notes.md:80`): proxy/VPN connect, wintun elevation, Credential
+  Manager round-trip, tunnel-socket bypass — item 6 of §10.
+
+The remaining work is runtime verification and the elevation/driver-lifecycle
+decision (§5.4, item 7 of §10).
 
 ## 10. Recommended implementation order
 
-Concrete sequence of work items, each independently verifiable on a Linux host
-until the last:
+Items 1–5 are **done** (in this milestone); 6–7 remain.
 
-1. **Parameterize the glue** — make `Platform` and the runner selectable in
-   `core/glue/glue.go` (build tag or init-config field); use
-   `Platform: "windows"` + `tunnel.NewInProcessRunner` for Windows
-   (fixes §4.4 items 1–2). Add a `go build` for `GOOS=windows` to `make check`
-   so regressions are caught on Linux. *Verifiable: DLL still cross-compiles;
-   a `GOOS=windows` unit build of glue is green.*
-2. **Fix the data-dir fallback** in `glue.go` (`os.UserConfigDir()`, §4.4 item 3)
-   so an empty `dataDir` lands in `%APPDATA%\OmniProxy`.
-3. **Write `bridge_windows.dart`** by cloning `bridge_linux.dart` (§4.1/§4.3):
-   `omniproxy.dll` path resolution, `%APPDATA%\OmniProxy` default, no
-   `helperPath`. Unit-testable on Linux with a mock library path override
-   (`bridge_linux.dart:148-156` pattern).
-4. **Wire `client_factory.dart`** — route `Platform.isWindows` to
-   `BridgeApiClient(WindowsBridge(...))` (`client_factory.dart:20-28`).
-5. **Add the Windows bundle step** to `app/windows/CMakeLists.txt` — install
-   `omniproxy.dll` (and decide whether to keep installing `wintun.dll`, §5.4.3)
-   next to the exe, mirroring `app/linux/CMakeLists.txt:115-128`.
-6. **Windows host/CI verification** — `flutter build windows --release`,
-   then on a real Windows machine: proxy-mode connect, VPN-mode connect
-   (elevation path TBD per §5.4.1), reconnect after network switch, IPv6
-   behavior, firewall prompts, Credential Manager round-trip, and the
-   tunnel-socket-bypass check from §6.3.
+1. **Parameterize the glue** — done: `core/glue/platform_{linux,windows}.go`
+   (build tags) select `Platform` and the runner; `GOOS=windows` c-shared
+   cross-build is part of `make go-check` (`go-check-windows`).
+2. **Fix the data-dir fallback** — done: `defaultDataDir()` uses
+   `os.UserConfigDir()` (§4.4 item 3).
+3. **Write `bridge_windows.dart`** — done: clone of `bridge_linux.dart`
+   (§4.1/§4.3); `omniproxy.dll` path resolution, `%APPDATA%\OmniProxy` default,
+   no `helperPath`, `OMNIPROXY_LIB` override for tests.
+4. **Wire `client_factory.dart`** — done: `Platform.isWindows` →
+   `BridgeApiClient(createWindowsTransport())`.
+5. **Add the Windows bundle step** — done: `app/windows/CMakeLists.txt`
+   installs `omniproxy.dll` + `wintun.dll` next to the exe, mirroring the Linux
+   bundle. The CI workflow (`.github/workflows/windows.yml`) builds both core
+   artifacts and `flutter build windows --release` on `windows-latest`.
+6. **Windows host/CI verification** — `flutter build windows --release` (CI
+   produces the bundle), then on a real Windows machine: proxy-mode connect,
+   VPN-mode connect (elevation path TBD per §5.4.1), reconnect after network
+   switch, IPv6 behavior, firewall prompts, Credential Manager round-trip, and
+   the tunnel-socket-bypass check from §6.3.
 7. **Decide the elevation + driver-lifecycle model** (§5.4.1/§5.4.2) and the
    service/start-with-system stance (`docs/platform-notes.md:77`), surfacing
    limitations in the UI.
@@ -526,7 +499,7 @@ until the last:
 - `docs/ARCHITECTURE.md` — layered architecture; platform differences (§8),
   transport comparison table (`ARCHITECTURE.md:377-388`).
 - `docs/FLUTTER_GO_FFI.md` — the FFI transport boundary in depth; §6 "Windows
-  bridge — current placeholder", §7 polling-vs-push.
+  bridge — implemented, host-unverified", §7 polling-vs-push.
 - `docs/VPN_INTERNALS.md` — the TUN device per platform (§3), gVisor /
   `FdTunPlatform` (§4 — Android-only; Windows uses sing-tun's wintun path
   instead), DNS handling (§6).
@@ -537,8 +510,8 @@ until the last:
 - `docs/PROXY_ARCHITECTURE.md` — proxy-mode data path, why it needs no
   privileges.
 - `docs/GO_RUNTIME.md` — CGO/FFI runtime behavior (§7), the poll loop.
-- `docs/FLUTTER.md` — app-side architecture; §10 documents the Windows mock
-  fallback.
+- `docs/FLUTTER.md` — app-side architecture; §10 documents the Windows bridge
+  and the mock's remaining role.
 - `docs/platform-notes.md` §Windows (`:73-80`) and the permission matrix
   (`:82-89`) — the canonical per-platform notes.
 - `docs/api-contract.md` §5.2 (`:184-201`) — the C ABI Windows implements;

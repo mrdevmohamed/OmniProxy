@@ -1,0 +1,61 @@
+name: windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Builds the Windows core (omniproxy.dll + wintun.dll) and the Flutter Windows
+# release bundle on a Windows host. The Flutter bundle cannot be produced on a
+# Linux host (docs/WINDOWS.md §2.4, Makefile flutter-windows guard), so this
+# workflow is the sanctioned way to get a Windows build from a Linux-centric
+# repo. Artifacts mirror `make windows-core` + `make flutter-windows`.
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # cgo for the c-shared DLL needs a C compiler; choco mingw supplies gcc.
+      - name: Install mingw (cgo C compiler)
+        run: choco install mingw -y --no-progress
+
+      - name: Build core DLL
+        run: |
+          New-Item -ItemType Directory -Force -Path core/out | Out-Null
+          cd core
+          $env:CGO_ENABLED = '1'
+          go build -buildmode=c-shared -o ../core/out/omniproxy.dll ./glue
+
+      - name: Fetch wintun.dll
+        run: |
+          $tmp = Join-Path $env:TEMP 'wintun.zip'
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $tmp
+          $exp = Join-Path $env:TEMP 'wintun'
+          Expand-Archive -Path $tmp -DestinationPath $exp -Force
+          New-Item -ItemType Directory -Force -Path core/out | Out-Null
+          Copy-Item (Join-Path $exp 'wintun/bin/amd64/wintun.dll') core/out/wintun.dll -Force
+
+      - name: Build Flutter Windows bundle
+        working-directory: app
+        run: flutter build windows --release
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniproxy-windows
+          path: app/build/windows/x64/runner/Release/
+          if-no-files-found: error

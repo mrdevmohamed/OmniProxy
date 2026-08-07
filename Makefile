@@ -32,7 +32,7 @@ WINTUN_VERSION := 0.14.1
 HOST_OS := $(shell uname -s)
 
 .PHONY: all build build-native check test clean help \
-	go-check go-test flutter-check flutter-test \
+	go-check go-check-windows go-test flutter-check flutter-test \
 	build-android aar apk appbundle \
 	build-linux linux-core flutter-linux \
 	build-windows windows-core wintun flutter-windows \
@@ -57,7 +57,21 @@ go-check:
 		( test -z "$$(gofmt -l .)" || ( echo "gofmt needed:"; gofmt -l .; false ) )
 	@cd $(ROOT)/engine && go build ./... && go vet ./... && \
 		( test -z "$$(gofmt -l .)" || ( echo "gofmt needed:"; gofmt -l .; false ) )
+	@$(MAKE) go-check-windows
 	@echo "go-check: core + engine clean"
+
+## GOOS=windows cross-build gate (M8): catches Windows-tagged regressions
+## (core/glue platform selection) on a Linux host. Skips when the mingw
+## cross-compiler is not installed.
+go-check-windows:
+	@command -v $(MINGW_CC) >/dev/null 2>&1 || { \
+		echo "go-check-windows: $(MINGW_CC) not found — skipping windows cross-build"; \
+		exit 0; }
+	@mkdir -p $(CORE_OUT)
+	@cd $(ROOT)/core && CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=$(MINGW_CC) \
+		go build -buildmode=c-shared -o $(CORE_OUT)/omniproxy-check.dll ./glue
+	@rm -f $(CORE_OUT)/omniproxy-check.dll $(CORE_OUT)/omniproxy-check.h
+	@echo "go-check-windows: green"
 
 ## go test for core and engine.
 go-test:

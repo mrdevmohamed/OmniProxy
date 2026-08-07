@@ -21,16 +21,16 @@ transport families, plus a mock:
 |---|---|---|---|
 | Linux FFI | `app/lib/core/bridge/bridge_linux.dart` + `core/glue/glue.go` | `dart:ffi` into `libomniproxy.so` (c-shared) | live (M6) |
 | Android MethodChannel | `app/lib/core/bridge/bridge_android.dart` + `core/mobile/mobile.go` + `Bridge.kt` | gomobile bind `.aar`, Kotlin MethodChannel host | live (M7) |
-| Windows FFI | `app/lib/core/bridge/bridge_windows.dart` | `dart:ffi` into `omniproxy.dll` (same ABI as Linux) | placeholder (M8) |
+| Windows FFI | `app/lib/core/bridge/bridge_windows.dart` | `dart:ffi` into `omniproxy.dll` (same ABI as Linux) | implemented, host-unverified |
 | Mock | `app/lib/core/mock_api_client.dart` | in-Dart, in-memory | dev/shell fallback |
 
 Selection happens once in `app/lib/core/client_factory.dart:20-28`:
-Android → `AndroidBridge`, Linux → `LinuxBridge`, everything else (including
-Windows today) → `MockApiClient` so the shell keeps running until M8
-(`client_factory.dart:18-27`).
+Android → `AndroidBridge`, Linux → `LinuxBridge`, Windows →
+`WindowsBridge`, and only platforms without a bridge (e.g. macOS) fall back to
+`MockApiClient`.
 
 **What this doc covers:** the contract envelope (§3), the Linux FFI transport
-(§4), the Android MethodChannel transport (§5), the Windows placeholder (§6),
+(§4), the Android MethodChannel transport (§5), the Windows FFI transport (§6),
 the poll-vs-push event design (§7), the memory & lifetime protocol (§8 — the
 riskiest part), error/lifecycle handling (§9), serialization performance (§10),
 known gaps (§11), and pointers to sibling docs (§12).
@@ -436,22 +436,22 @@ devices; the FFI transport has no such fixed ceiling (§10, §11).
 
 ---
 
-## 6. Windows bridge — current placeholder
+## 6. Windows bridge — implemented, host-unverified
 
-`app/lib/core/bridge/bridge_windows.dart` is a four-method stub:
-`request` and `events` `throw UnsupportedError('WindowsBridge lands in M8')`;
-`start`/`stop` are no-ops (`bridge_windows.dart:7-21`). It is marked
-"Code-complete in M8; documented untested" (`bridge_windows.dart:5-6`).
+`app/lib/core/bridge/bridge_windows.dart` is a full `dart:ffi` transport
+mirroring `LinuxBridge`: same five symbols, same memory protocol, same 15 ms
+poll cadence, `%APPDATA%\OmniProxy` default, no `helperPath`. `client_factory`
+routes Windows to it; `app/windows/CMakeLists.txt` bundles `omniproxy.dll` +
+`wintun.dll` next to the exe, and `.github/workflows/windows.yml` builds the
+bundle on `windows-latest`.
 
-**Why deferred:** Windows cannot be validated on the Linux dev host. M8
-already produced the missing *Go* side — `omniproxy.dll` + `wintun.dll` now
-cross-compile from Linux via mingw-w64 (`docs/implementation-plan.md:98`), and
-the engine gained `//go:build linux || android` guards so Linux-only
-ioctls/syscalls don't break the Windows build. The remaining work is the Dart
-side, which is a near-copy of `LinuxBridge` (same ABI —
-`api-contract.md:184-201`, `omniproxy.h:90-94`): load `omniproxy.dll`, resolve
-the same five symbols, same memory protocol, same poll cadence. In the meantime
-`client_factory.dart:27` falls back to `MockApiClient` so the shell runs.
+**Why it was deferred (now resolved):** Windows cannot be validated on the Linux
+dev host. The *Go* side already cross-compiles — `omniproxy.dll` + `wintun.dll`
+from Linux via mingw-w64 (`docs/implementation-plan.md:98`), and the engine
+gained `//go:build linux || android` guards so Linux-only ioctls/syscalls don't
+break the Windows build; the glue's platform/runner selection is build-tagged
+(`core/glue/platform_{linux,windows}.go`). Runtime behavior still needs a real
+Windows host or a CI job that runs the app (item 6 of `docs/WINDOWS.md` §10).
 
 The Windows-specific wrinkles are config, not ABI: `helperPath` is meaningless
 (`platform-notes.md:73-80` — no pkexec helper; Wintun is in-process), and the
@@ -777,11 +777,13 @@ small (`ServerProfile`, settings, logs) except `listServers`/`exportServers`.
    start/stops repeatedly.
 8. **Android channel message size ceiling** — large `exportServers` blobs may
    approach Binder limits (§5, message size limits).
-9. **Windows transport is a stub** (§6) — the Dart side of the same ABI is
-   untested, and M8 validation needs a Windows host/CI.
-10. **Windows `defaultLibraryPath`-style resolution is absent** in the stub;
-    the M8 implementation must mirror `bridge_linux.dart:148-156` with a
-    `%APPDATA%` data dir.
+9. **Windows transport is host-unverified** (§6) — the Dart side of the same
+   ABI is implemented but has never run against the real DLL; validation needs
+   a Windows host or a CI job that exercises it.
+10. **Windows library-path resolution** relies on the DLL sitting next to the
+   exe (bundled by CMake) plus the `OMNIPROXY_LIB` override; there is no
+   registry-based lookup. Matches the `bridge_linux.dart` model with an
+   `%APPDATA%` data dir.
 11. **Event ordering across poll boundaries is FIFO within the ring**
     (`ring.go:29-45`), and Android re-posts each event to the main thread in
     array order (`Bridge.kt:279-284`); ordering is therefore preserved. Not a

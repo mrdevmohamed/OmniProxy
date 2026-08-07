@@ -93,6 +93,21 @@ install(DIRECTORY "${NATIVE_ASSETS_DIR}"
    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
    COMPONENT Runtime)
 
+# === OmniProxy Go bridge (M8) ===
+# omniproxy.dll (dart:ffi transport) and wintun.dll land next to the
+# executable (the install prefix is the exe dir on Windows). Built by
+# `make windows-core` into core/out; guards keep a plain
+# `flutter build windows` working when absent.
+set(OMNIPROXY_CORE_OUT "${CMAKE_CURRENT_LIST_DIR}/../../core/out")
+if(EXISTS "${OMNIPROXY_CORE_OUT}/omniproxy.dll")
+  install(FILES "${OMNIPROXY_CORE_OUT}/omniproxy.dll"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+if(EXISTS "${OMNIPROXY_CORE_OUT}/wintun.dll")
+  install(FILES "${OMNIPROXY_CORE_OUT}/wintun.dll"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.
 set(FLUTTER_ASSET_DIR_NAME "flutter_assets")

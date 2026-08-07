@@ -496,12 +496,12 @@ classDiagram
 - `ApiClient` is the app's only view of the core (`app/lib/core/api_client.dart:9`).
   `BridgeApiClient` (`bridge_api_client.dart:9`) is pure transport plumbing — it calls
   `BridgeTransport.request`, unwraps `BridgeResponse`, and throws `ApiError` with the
-  contract error code; `MockApiClient` implements the same interface in memory for desktop
-  shells that have no transport yet (`mock_api_client.dart:17`, seeds three servers — "Tokyo
+  contract error code; `MockApiClient` implements the same interface in memory for dev/test
+  and any platform without a bridge (`mock_api_client.dart:17`, seeds three servers — "Tokyo
   Relay" vless, "Frankfurt Shadowsocks", "Local HTTP", `mock_api_client.dart:41-83`).
 - `BridgeTransport` is the seam (`bridge_transport.dart:24`): Linux (FFI), Android
-  (MethodChannel), Windows (stub). Each transport owns the poller/timer that drains the
-  event ring, so the poll cadence is a per-platform concern (15 ms Linux, 25 ms Android).
+  (MethodChannel), Windows (FFI). Each transport owns the poller/timer that drains the
+  event ring, so the poll cadence is a per-platform concern (15 ms Linux, 15 ms Windows, 25 ms Android).
 - `ServerProfile` composes its TLS/transport/SSH settings; credential fields are plain
   strings on the wire and are stored as *refs* by the core (see FLOWCHARTS § 9/10 in the
   sequence doc) — never as plaintext.

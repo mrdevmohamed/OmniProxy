@@ -234,7 +234,7 @@ sing-box supports a `PlatformInterface` hook. Default is `noopPlatform` (engine 
 
 ### 4.12 Bridge transports (Dart) — `app/lib/core/bridge/`
 
-`BridgeTransport` is the pure-transport contract: `request`, `events`, `start`, `stop` (`app/lib/core/bridge/bridge_transport.dart:24-37`). `BridgeApiClient` implements the full contract `ApiClient` on top of any transport, one method = one transport request (`app/lib/core/bridge_api_client.dart:9-152`). `client_factory.buildApiClient` picks the transport per platform and **falls back to the mock on Windows** until the M8 transport lands (`app/lib/core/client_factory.dart:20-28`).
+`BridgeTransport` is the pure-transport contract: `request`, `events`, `start`, `stop` (`app/lib/core/bridge/bridge_transport.dart:24-37`). `BridgeApiClient` implements the full contract `ApiClient` on top of any transport, one method = one transport request (`app/lib/core/bridge_api_client.dart:9-152`). `client_factory.buildApiClient` picks the transport per platform; only platforms without a bridge (e.g. macOS) fall back to the mock (`app/lib/core/client_factory.dart:20-28`).
 
 - **Linux** — `dart:ffi` into `libomniproxy.so`, draining the C event ring on a 15 ms timer (`app/lib/core/bridge/bridge_linux.dart:27-70`, `:122-138`). Polled, not pushed, because a native callback into the Dart isolate deadlocks when the isolate is blocked inside a synchronous request that itself publishes an event (`:23-26`, mirrored in `core/glue/glue.go:7-11`).
 - **Android** — MethodChannel `com.omniproxy/bridge` for requests and `com.omniproxy/events` for events (`app/lib/core/bridge/bridge_android.dart:17-83`). The Kotlin host runs requests on a background thread and drains the Go ring on a 25 ms HandlerThread timer (`app/android/.../Bridge.kt:213-237`, `:251-285`).
@@ -377,15 +377,15 @@ The VPN service is the only writer of `stateChanged`; the tunnel manager reports
 | Concern | Android | Linux | Windows |
 |---|---|---|---|
 | Go packaging | gomobile bind `.aar` (`Makefile:89-101`) | c-shared `libomniproxy.so` (`Makefile:115-116`, `tools/build_linux.sh`) | c-shared `omniproxy.dll`, cross-compiled from Linux (`Makefile:128-138`) |
-| Bridge transport | MethodChannel ×2, Kotlin poll thread (`app/lib/core/bridge/bridge_android.dart:17-83`; `Bridge.kt:213-285`) | dart:ffi + 15 ms Dart poll timer (`app/lib/core/bridge/bridge_linux.dart:27-70,122-138`) | dart:ffi — **M8 stub, throws UnsupportedError** (`app/lib/core/bridge/bridge_windows.dart:7-22`); client falls back to `MockApiClient` (`app/lib/core/client_factory.dart:26-27`) |
+| Bridge transport | MethodChannel ×2, Kotlin poll thread (`app/lib/core/bridge/bridge_android.dart:17-83`; `Bridge.kt:213-285`) | dart:ffi + 15 ms Dart poll timer (`app/lib/core/bridge/bridge_linux.dart:27-70,122-138`) | dart:ffi + 15 ms Dart poll timer into `omniproxy.dll` (`app/lib/core/bridge/bridge_windows.dart:27-70`), implemented but unverified on a Windows host |
 | VPN/TUN ownership | `VpnService` establishes TUN, fd handed to engine (`OmniProxyVpnService.kt:60-65`; `core/mobile/mobile.go:171-179`; `engine/platform_fd.go:167-190`) | privileged pkexec helper hosts engine + TUN (`core/tunnel/helper_client.go:41-58`; `helperhost/helperhost.go:24-65`) | Wintun driver, in-process DLL (`Makefile:140-153`; `docs/platform-notes.md §Windows`) |
 | Engine platform hook | `FdTunPlatform` (protect + passive monitor) (`engine/platform_fd.go:64-150`) | none — `noopPlatform` (`engine/platform.go:18-52`) | none — `noopPlatform` |
 | Default interface / netlink | forbidden; Kotlin pushes via `Mobile.setDefaultInterface`/`setNetworkInterfaces` (`core/mobile/mobile.go:226-289`; `Bridge.kt:81-154`) | netlink available in helper | Wintun model |
 | Secure storage | Android Keystore (`KeystoreSecretStore.kt:24-42`; `core/mobile/mobile.go:102-110`) | libsecret via go-keyring (`core/secret/store.go:1-4`; `core/core.go:83-86`) | Credential Manager/DPAPI via go-keyring |
 | Service model | foreground `VpnProxyService` + persistent notification (`VpnProxyService.kt:14-42`) | none (desktop app process + helper) | in-process (Windows service deferred to Phase 1.5+) (`docs/platform-notes.md §Windows:77`) |
-| Test status | device E2E green (integration_test, `Makefile:82-84`) | E2E through local SOCKS5 test server green (`docs/implementation-plan.md:96`) | code-complete, **untested on Linux host** (`docs/implementation-plan.md:98`) |
+| Test status | device E2E green (integration_test, `Makefile:82-84`) | E2E through local SOCKS5 test server green (`docs/implementation-plan.md:96`) | code-complete, **host-unverified** (`docs/implementation-plan.md:98`; CI workflow `.github/workflows/windows.yml`) |
 
-Platform **limitations** are surfaced in the UI rather than silently degraded (AGENTS.md product rules); the mock fallback on Windows is the explicit M8 placeholder rather than a silent half-transport (`app/lib/core/client_factory.dart:20-28`).
+Platform **limitations** are surfaced in the UI rather than silently degraded (AGENTS.md product rules); Windows runs on the real bridge transport, and only platforms with no bridge at all (e.g. macOS) fall back to the mock (`app/lib/core/client_factory.dart:20-28`).
 
 ---
 
@@ -418,7 +418,7 @@ Platform **limitations** are surfaced in the UI rather than silently degraded (A
 
 ## 10. Limitations & gaps
 
-- **Windows is not runnable yet.** `WindowsBridge` throws `UnsupportedError` and the client factory falls back to the mock (`app/lib/core/bridge/bridge_windows.dart:7-22`, `app/lib/core/client_factory.dart:26-27`). The core DLL cross-compiles from Linux, but the app bundle requires a Windows host/CI (`Makefile:156-160`).
+- **Windows is implemented but unverified on a real host.** `WindowsBridge` (`bridge_windows.dart`) is a full dart:ffi transport; the core DLL cross-compiles from Linux and the app bundle is built by CI (`Makefile:156-160`, `.github/workflows/windows.yml`), but no Windows machine has run the connected flow yet.
 - **Single server, no chaining.** `tunnel.Manager` is explicitly single-server; chains are a Phase 2 seam (`core/tunnel/manager.go:16-18`, `implementation-plan.md:111-113`).
 - **No stats.** `VPNSession.bytesUp/bytesDown` exist but are never populated in MVP (`api-contract.md:89-90`); monitoring is Phase 2.
 - **Transport support is WS-only.** gRPC/HTTPUpgrade and Reality are parser-level seams rejected at import and not wired (`engine/config.go:44-52`, `core/server/links.go`).

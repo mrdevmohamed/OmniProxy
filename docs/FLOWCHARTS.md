@@ -119,7 +119,8 @@ flowchart TD
     A(["buildApiClient()"]) --> B{"platform?"}
     B -- Android --> C["BridgeApiClient(AndroidBridge())<br/>bridge_android.dart:17"]
     B -- Linux --> D["BridgeApiClient(createLinuxTransport())<br/>bridge_linux.dart:27"]
-    B -- else (Windows, macOS, tests) --> E["MockApiClient<br/>mock_api_client.dart:17"]
+    B -- Windows --> W["BridgeApiClient(createWindowsTransport())<br/>bridge_windows.dart:27"]
+    B -- else (macOS, tests) --> E["MockApiClient<br/>mock_api_client.dart:17"]
     D --> F{"libraryPath / dataDir / helperPath overrides?"}
     F -- yes --> G["LinuxBridge(custom init config)"]
     F -- no --> H["LinuxBridge(defaults)"]
@@ -127,13 +128,14 @@ flowchart TD
     G --> I
     H --> I
     E --> I
+    W --> I
 ```
 
 **Why.** `createLinuxTransport` accepts optional overrides for tests and packaged app
 directories; production Linux loads `libomniproxy.so` and passes the real data dir plus the
-bundled `omniproxy-helper` path. Windows has no transport yet — `WindowsBridge` throws
-`UnsupportedError('WindowsBridge lands in M8')` (`bridge_windows.dart:7`) — so the desktop
-shell continues to run on the mock until Milestone 8.
+bundled `omniproxy-helper` path. Windows routes to `createWindowsTransport()`
+(`bridge_windows.dart`, `omniproxy.dll` via dart:ffi) since M8. Only platforms with no
+bridge fall back to the mock.
 
 ---
 

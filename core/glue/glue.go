@@ -30,7 +30,6 @@ import (
 	"omniproxy/core/internal/ring"
 	"omniproxy/core/log"
 	"omniproxy/core/models"
-	"omniproxy/core/tunnel"
 )
 
 func main() {}
@@ -48,22 +47,20 @@ const eventRingCap = 512
 
 // initConfig mirrors the optional config_json passed to omniproxy_init.
 // DataDir is the platform config directory; LogLevel the initial logger level;
-// HelperPath the location of the omniproxy-helper binary (VPN mode).
+// HelperPath the location of the omniproxy-helper binary (VPN mode, Linux only).
 type initConfig struct {
 	DataDir    string `json:"dataDir"`
 	LogLevel   string `json:"logLevel"`
 	HelperPath string `json:"helperPath"`
 }
 
-// defaultDataDir falls back to $XDG_CONFIG_HOME/omniproxy (~/.config/omniproxy).
+// defaultDataDir falls back to the OS config directory:
+// $XDG_CONFIG_HOME/omniproxy (~/.config/omniproxy) on Linux, %APPDATA%\OmniProxy
+// on Windows (os.UserConfigDir is per-platform).
 func defaultDataDir() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ".omniproxy"
-		}
-		base = filepath.Join(home, ".config")
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return ".omniproxy"
 	}
 	return filepath.Join(base, "omniproxy")
 }
@@ -89,9 +86,9 @@ func omniproxy_init(configJSON *C.char) C.int {
 	}
 
 	logger := log.NewLogger(level)
-	runner := tunnel.NewHelperAwareRunner(logger, tunnel.NewHelperSpawner(cfg.HelperPath))
+	runner := newRunner(logger, cfg.HelperPath)
 	f, err := core.New(core.Config{
-		Platform: "linux",
+		Platform: platformName(),
 		DataDir:  dataDir,
 		LogLevel: level,
 		Logger:   logger,
