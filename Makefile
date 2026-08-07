@@ -7,6 +7,10 @@
 #   make test          # go test (core + engine) + flutter test (incl. Linux E2E)
 #   make e2e-android   # bridge E2E on a connected Android device
 #
+# Android APKs are built per-ABI (flutter build apk --split-per-abi) so each
+# release APK only carries its own libgojni.so — three small APKs instead of
+# one fat one. Use `make apk-fat` when a single universal APK is required.
+#
 # Overridable: FLUTTER, GOMOBILE, DEVICE (e.g. make e2e-android DEVICE=2eb95e94)
 
 SHELL := /usr/bin/env bash
@@ -31,9 +35,14 @@ MINGW_CC ?= x86_64-w64-mingw32-gcc
 WINTUN_VERSION := 0.14.1
 HOST_OS := $(shell uname -s)
 
+# Per-ABI release APKs (flutter build apk --split-per-abi). x86 (32-bit) is not
+# produced by Flutter and therefore intentionally excluded from this list.
+ANDROID_ABIS := armeabi-v7a arm64-v8a x86_64
+APK_DIR := $(ROOT)/app/build/app/outputs/flutter-apk
+
 .PHONY: all build build-native check test clean help \
 	go-check go-check-windows go-test flutter-check flutter-test \
-	build-android aar apk appbundle \
+	build-android aar apk apk-fat appbundle stage-android \
 	build-linux linux-core flutter-linux \
 	build-windows windows-core wintun flutter-windows \
 	e2e e2e-android
@@ -116,14 +125,34 @@ aar:
 		-o $(AAR) omniproxy/core/mobile
 	@cp -v $(AAR) $(AAR_TARGET)
 
-## Release APK (and AAB for Play).
+## Release APKs, one per ABI (--split-per-abi): each APK carries only its own
+## libgojni.so so downloads are much smaller than a universal fat APK.
+## Outputs: app-{armeabi-v7a,arm64-v8a,x86_64}-release.apk in app/build/.../flutter-apk.
 apk: aar
+	@cd $(ROOT)/app && $(FLUTTER) build apk --release --split-per-abi
+
+## Universal release APK bundling every ABI into a single (larger) file.
+apk-fat: aar
 	@cd $(ROOT)/app && $(FLUTTER) build apk --release
+
+## AAB for Google Play (Play splits per device config at install time).
 appbundle: aar
 	@cd $(ROOT)/app && $(FLUTTER) build appbundle --release
 
-## Full Android release.
-build-android: apk
+## Copy the per-ABI release APKs into dist/ with ABI-suffixed names.
+stage-android: apk
+	@mkdir -p $(ROOT)/dist
+	@for abi in $(ANDROID_ABIS); do \
+		src="$(APK_DIR)/app-$$abi-release.apk"; \
+		if [ -f "$$src" ]; then \
+			cp -v "$$src" "$(ROOT)/dist/omniproxy-android-$$abi.apk"; \
+		else \
+			echo "warning: missing $${abi} APK ($$src)"; \
+		fi; \
+	done
+
+## Full Android release: per-ABI APKs staged into dist/.
+build-android: stage-android
 
 # --- Linux (release) --------------------------------------------------------
 

@@ -8,10 +8,12 @@ on:
   workflow_dispatch:
 
 # Builds the Android release on a Linux host: gomobile binds the Go core into
-# `omniproxy.aar` (with_gvisor tag), then `flutter build apk --release`
-# produces a fat APK. Mirrors `make apk`. On v* tags the APK is attached to the
-# GitHub Release so users can download it from the Releases page; otherwise it
-# is kept as a CI artifact only.
+# `omniproxy.aar` (with_gvisor tag), then `flutter build apk --release
+# --split-per-abi` produces one small APK per CPU architecture (arm64-v8a,
+# armeabi-v7a, x86_64) instead of a single fat APK. Mirrors `make
+# stage-android`. On v* tags the per-ABI APKs are attached to the GitHub
+# Release so users can download the one matching their device; otherwise they
+# are kept as CI artifacts only.
 
 jobs:
   build:
@@ -50,23 +52,18 @@ jobs:
           gomobile init
         working-directory: core
 
-      - name: Build APK (gomobile AAR + flutter build apk)
-        run: make apk
+      - name: Build APKs (gomobile AAR + flutter split-per-abi) and stage
+        run: make stage-android
 
-      - name: Stage APK
-        run: |
-          mkdir -p dist
-          cp app/build/app/outputs/flutter-apk/app-release.apk dist/omniproxy-android.apk
-
-      - name: Upload APK artifact
+      - name: Upload per-ABI APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: omniproxy-android
-          path: dist/omniproxy-android.apk
+          path: dist/*.apk
           if-no-files-found: error
 
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/omniproxy-android.apk
+          files: dist/*.apk
