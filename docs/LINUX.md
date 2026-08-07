@@ -99,11 +99,21 @@ go build -buildmode=c-shared -o "$OUT/libomniproxy.so" ./glue
 
 The package is `core/glue`, a `package main` with an empty `main()` (`core/glue/glue.go:14,36`) so it can be built as a shared object. cgo is required for the C `char*` ABI (`core/glue/glue.go:16-19`). The engine module (`omniproxy/engine`) is a workspace member resolved via `replace omniproxy/engine => ../engine` (`core/go.mod:91`) and dragged into the same binary, so the `.so` contains **both** the core facade and a full copy of sing-box.
 
-The helper is built in the same script from the same module graph (`tools/build_linux.sh:16`):
+The helper is built in the same script from the same module graph
+(`tools/build_linux.sh:16`), but **with the `with_gvisor` tag**:
 
 ```bash
-go build -o "$OUT/omniproxy-helper" ./cmd/omniproxy-helper
+go build -tags with_gvisor -o "$OUT/omniproxy-helper" ./cmd/omniproxy-helper
 ```
+
+The tag compiles sing-box's userspace gVisor TUN stack, which the default
+`mixed` stack needs for UDP; without it a VPN-mode `Start` fails with "gVisor
+is not included in this build" (`stack_gvisor_stub.go`, `docs/VPN_INTERNALS.md:99-101`).
+Only the helper carries the tag — the `.so` never hosts the TUN on Linux
+(proxy mode is in-process; VPN mode is always delegated to the helper), so
+building it with the tag would only inflate the bundle. The tag is threaded
+from `GOMOD_TAGS` (`Makefile:25`, `make linux-core`), the same single source of
+truth the Android AAR uses.
 
 Both artifacts share the pinned sing-box version `v1.13.15` (`core/go.mod:7`, `engine/go.mod:6`, reported by `getVersion` via `core/core.go:29-30`).
 

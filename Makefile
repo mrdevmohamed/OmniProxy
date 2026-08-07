@@ -22,6 +22,7 @@ CORE_OUT := $(ROOT)/core/out
 # gomobile bind settings (docs/platform-notes.md §Android).
 ANDROID_API := 24          # NDK 28 supports 21..35; Flutter default minSdk is 24
 JAVAPKG := com.omniproxy.bind  # must match Bridge.kt import
+# gVisor TUN stack build tag: Android AAR (aar) + Linux helper (linux-core).
 GOMOD_TAGS := with_gvisor
 AAR := $(CORE_OUT)/omniproxy.aar
 AAR_TARGET := $(ROOT)/app/android/app/libs/omniproxy.aar
@@ -111,9 +112,9 @@ build-android: apk
 
 # --- Linux (release) --------------------------------------------------------
 
-## Go bridge artifacts: libomniproxy.so (c-shared) + omniproxy-helper.
+## Go bridge artifacts: libomniproxy.so (c-shared) + omniproxy-helper (with_gvisor).
 linux-core:
-	@$(ROOT)/tools/build_linux.sh
+	@GOMOD_TAGS="$(GOMOD_TAGS)" $(ROOT)/tools/build_linux.sh
 
 ## Release desktop bundle.
 flutter-linux: linux-core

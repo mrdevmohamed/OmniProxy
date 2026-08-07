@@ -65,7 +65,7 @@ platform. `AppSettings.ipv6Mode` (see `docs/api-contract.md` §2.3, default
   - Helper scope: authenticate (pkexec), own the engine lifecycle, configure TUN/routing. No tunnel *protocol* logic lives in the helper beyond what the shared `engine` module provides.
   - The core retries/waits for the helper with a timeout and reports `unauthorized` (PRD §3.3) with actionable UI text if pkexec is cancelled.
 - **Proxy mode:** no privileges needed; the core runs the `engine` module in-process with the local mixed inbound on loopback.
-- **Go core packaging:** `go build -buildmode=c-shared` → `libomniproxy.so`, loaded via `dart:ffi`. The helper is a separate binary under `tools/`.
+- **Go core packaging:** `go build -buildmode=c-shared` → `libomniproxy.so`, loaded via `dart:ffi`. The helper is a separate binary under `tools/`, built **with the `with_gvisor` tag** (`make linux-core` → `tools/build_linux.sh`); the `.so` is not tagged because it never hosts the TUN on Linux (VPN mode always delegates to the helper).
 - **Credentials:** Secret Service / libsecret (`go-keyring`).
 - **Config dir:** `$XDG_CONFIG_HOME/omniproxy` (fallback `~/.config/omniproxy`); data/logs under `$XDG_DATA_HOME`/`$XDG_STATE_HOME`.
 - **Desktop integration:** integrate with NetworkManager/systemd-resolved handling to avoid DNS/routing conflicts (Phase 1 scope: keep to sing-box defaults; revisit in Phase 2).

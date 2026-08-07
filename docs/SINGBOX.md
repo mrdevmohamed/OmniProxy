@@ -505,7 +505,9 @@ Phase 2 plans chaining and routing (`docs/implementation-plan.md:19`,
   `docs/platform-notes.md:19`); deprecated outbound-DNS-rule items (deprecated
   1.12, removed 1.14 — prefer the domain-resolver style already used here).
 - Building TUN on Android/Linux requires the `with_gvisor` tag (Makefile:
-  `GOMOD_TAGS := with_gvisor`; `core/mobile` gomobile bind command). gvisor
+  `GOMOD_TAGS := with_gvisor`; `core/mobile` gomobile bind command for the
+  Android AAR; the Linux `omniproxy-helper` is built `-tags with_gvisor` by
+  `make linux-core` → `tools/build_linux.sh:16-24`). gvisor
   forwarding happens inside sing-box, not core (`docs/GO_RUNTIME.md:277-283`).
 
 ## 10. Known gaps & limitations (and one open decision)
