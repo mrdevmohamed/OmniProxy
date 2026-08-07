@@ -61,7 +61,8 @@ go-check:
 	@echo "go-check: core + engine clean"
 
 ## GOOS=windows cross-build gate (M8): catches Windows-tagged regressions
-## (core/glue platform selection) on a Linux host. Skips when the mingw
+## (core/glue platform selection) on a Linux host. Uses the same GOMOD_TAGS
+## (with_gvisor) as the real Windows release build. Skips when the mingw
 ## cross-compiler is not installed.
 go-check-windows:
 	@command -v $(MINGW_CC) >/dev/null 2>&1 || { \
@@ -69,7 +70,7 @@ go-check-windows:
 		exit 0; }
 	@mkdir -p $(CORE_OUT)
 	@cd $(ROOT)/core && CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=$(MINGW_CC) \
-		go build -buildmode=c-shared -o $(CORE_OUT)/omniproxy-check.dll ./glue
+		go build -buildmode=c-shared -tags $(GOMOD_TAGS) -o $(CORE_OUT)/omniproxy-check.dll ./glue
 	@rm -f $(CORE_OUT)/omniproxy-check.dll $(CORE_OUT)/omniproxy-check.h
 	@echo "go-check-windows: green"
 
@@ -140,6 +141,8 @@ build-linux: flutter-linux
 # --- Windows (release) ------------------------------------------------------
 
 ## Cross-compiled omniproxy.dll + bundled wintun.dll (runs on a Linux host).
+## Built with the same with_gvisor tag as the Android AAR and Linux helper so
+## the gVisor user-space TUN stack is available for Windows VPN mode.
 windows-core:
 	@command -v $(MINGW_CC) >/dev/null 2>&1 || { \
 		echo "error: mingw-w64 cross compiler not found ($(MINGW_CC))."; \
@@ -147,7 +150,7 @@ windows-core:
 		exit 1; }
 	@mkdir -p $(CORE_OUT)
 	@cd $(ROOT)/core && CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=$(MINGW_CC) \
-		go build -buildmode=c-shared -o $(CORE_OUT)/omniproxy.dll ./glue
+		go build -buildmode=c-shared -tags $(GOMOD_TAGS) -o $(CORE_OUT)/omniproxy.dll ./glue
 	@$(MAKE) wintun
 	@echo "==> windows core artifacts in $(CORE_OUT)"
 

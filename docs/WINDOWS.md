@@ -56,16 +56,21 @@ talks to the real Go core through `omniproxy.dll`, not the mock.
 
 ### 2.3 The Go core DLL cross-compiles (the one M8 piece that is real)
 
-`core/out/omniproxy.dll` (43 MB) exists in the tree, and a fresh cross-compile
+`core/out/omniproxy.dll` (48 MB) exists in the tree, and a fresh cross-compile
 from the Linux host was verified clean:
 
 ```bash
 cd core && CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
-  CC=x86_64-w64-mingw32-gcc go build -buildmode=c-shared -o out.dll ./glue
+  CC=x86_64-w64-mingw32-gcc go build -buildmode=c-shared \
+  -tags with_gvisor -o out.dll ./glue
 ```
 
 The `windows-core` Makefile target does exactly this (`Makefile:128-137`) and
-requires `x86_64-w64-mingw32-gcc` (`Makefile:29,129-132`). `core/out/wintun.dll`
+requires `x86_64-w64-mingw32-gcc` (`Makefile:29,129-132`). The DLL is built with
+the same `with_gvisor` tag as the Android AAR and the Linux helper
+(`GOMOD_TAGS`, `Makefile:25-26`) so the gVisor user-space TUN stack is available
+for Windows VPN mode; `go-check-windows` cross-builds the glue with the same tag
+so a regression fails on the Linux host. `core/out/wintun.dll`
 (427,552 bytes, built 2021) was fetched by the `wintun` target
 (`Makefile:140-153`).
 

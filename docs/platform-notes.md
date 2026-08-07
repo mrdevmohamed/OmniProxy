@@ -72,13 +72,13 @@ platform. `AppSettings.ipv6Mode` (see `docs/api-contract.md` §2.3, default
 
 ## Windows
 
-- **Go core packaging:** `go build -buildmode=c-shared` → `omniproxy.dll`, loaded via `dart:ffi`; `wintun.dll` bundled next to the binary for TUN (sing-box/Wintun).
-- **TUN:** Wintun driver. Elevated privileges for interface creation are handled per sing-box's Windows model; the FFI process is the app process.
+- **Go core packaging:** `go build -buildmode=c-shared -tags with_gvisor` → `omniproxy.dll`, loaded via `dart:ffi`; `wintun.dll` bundled next to the binary for TUN (sing-box/Wintun). Same `GOMOD_TAGS` as the Android AAR and Linux helper, so the gVisor user-space stack is available for Windows VPN mode.
+- **TUN:** Wintun driver (gVisor stack available via the `with_gvisor` tag). Elevated privileges for interface creation are handled per sing-box's Windows model; the FFI process is the app process.
 - **Bridge:** `bridge_windows.dart` (dart:ffi, `omniproxy.dll`) mirrors the Linux transport; `client_factory` routes Windows to it. No privileged helper — the engine runs in-process for both modes (`core/glue/platform_windows.go`). The glue reports `platform: "windows"` via `getVersion`.
 - **Background service model (PRD §3.2):** a separate Windows service is a Phase 1.5+ concern. MVP uses the in-process DLL + FFI; note the limitation in the UI if applicable.
 - **Credentials:** Windows Credential Manager / DPAPI (`go-keyring`).
 - **Config dir:** `%APPDATA%\OmniProxy`.
-- **Build:** core DLL cross-compiles from Linux (`make windows-core`); the Flutter bundle requires a Windows host or CI — `.github/workflows/windows.yml` builds both on `windows-latest`. The glue is cross-checked by `make go-check` (`go-check-windows`).
+- **Build:** core DLL cross-compiles from Linux (`make windows-core`) with the `with_gvisor` tag; the Flutter bundle requires a Windows host or CI — `.github/workflows/windows.yml` builds both on `windows-latest`. The glue is cross-checked by `make go-check` (`go-check-windows`, same tag).
 - **NOT TESTABLE on the Linux dev host** — implemented and CI-built, but runtime behavior (wintun elevation, VPN/proxy connect, Credential Manager) must be verified on a Windows machine or CI before release.
 
 ## Permission matrix (MVP)

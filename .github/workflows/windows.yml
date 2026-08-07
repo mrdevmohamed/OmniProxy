@@ -43,7 +43,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path core/out | Out-Null
           cd core
           $env:CGO_ENABLED = '1'
-          go build -buildmode=c-shared -o ../core/out/omniproxy.dll ./glue
+          go build -buildmode=c-shared -tags with_gvisor -o ../core/out/omniproxy.dll ./glue
 
       - name: Fetch wintun.dll
         run: |
