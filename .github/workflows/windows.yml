@@ -3,6 +3,7 @@ name: windows
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -10,11 +11,15 @@ on:
 # release bundle on a Windows host. The Flutter bundle cannot be produced on a
 # Linux host (docs/WINDOWS.md §2.4, Makefile flutter-windows guard), so this
 # workflow is the sanctioned way to get a Windows build from a Linux-centric
-# repo. Artifacts mirror `make windows-core` + `make flutter-windows`.
+# repo. Artifacts mirror `make windows-core` + `make flutter-windows`. On v*
+# tags the bundle zip is attached to the GitHub Release so users can download it
+# from the Releases page; otherwise it is kept as a CI artifact only.
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -53,9 +58,21 @@ jobs:
         working-directory: app
         run: flutter build windows --release
 
-      - name: Upload bundle
+      - name: Stage release zip
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path app/build/windows/x64/runner/Release/* `
+            -DestinationPath dist/omniproxy-windows-x86_64.zip -Force
+
+      - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: omniproxy-windows
-          path: app/build/windows/x64/runner/Release/
+          path: dist/omniproxy-windows-x86_64.zip
           if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/omniproxy-windows-x86_64.zip

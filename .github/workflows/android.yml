@@ -1,0 +1,69 @@
+name: android
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Builds the Android release on a Linux host: gomobile binds the Go core into
+# `omniproxy.aar` (with_gvisor tag), then `flutter build apk --release`
+# produces a fat APK. Mirrors `make apk`. On v* tags the APK is attached to the
+# GitHub Release so users can download it from the Releases page; otherwise it
+# is kept as a CI artifact only.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # gomobile bind needs an Android NDK; the GitHub ubuntu-latest image ships
+      # the Android SDK (cmdline-tools) but not the NDK itself.
+      - name: Install Android NDK
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "ndk;28.2.13676358" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      # Pins gomobile to the x/mobile version in core/go.mod.
+      - name: Install gomobile
+        run: go install golang.org/x/mobile/cmd/gomobile
+        working-directory: core
+
+      - name: Build APK (gomobile AAR + flutter build apk)
+        run: make apk
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp app/build/app/outputs/flutter-apk/app-release.apk dist/omniproxy-android.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniproxy-android
+          path: dist/omniproxy-android.apk
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/omniproxy-android.apk

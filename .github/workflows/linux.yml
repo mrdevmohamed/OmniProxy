@@ -1,0 +1,62 @@
+name: linux
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Builds the full Linux release on a Linux host (core artifacts via
+# tools/build_linux.sh + `flutter build linux --release`) and packages the
+# bundle into a tarball. Mirrors `make build-linux`. On v* tags the tarball is
+# attached to the GitHub Release so users can download it from the Releases
+# page; otherwise it is kept as a CI artifact only.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config zip unzip \
+            libgtk-3-dev liblzma-dev libsecret-1-dev
+
+      - name: Build core + Flutter release bundle
+        run: make build-linux
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/omniproxy-linux-x86_64.tar.gz \
+            -C app/build/linux/x64/release/bundle omniproxy
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniproxy-linux
+          path: dist/omniproxy-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/omniproxy-linux-x86_64.tar.gz
