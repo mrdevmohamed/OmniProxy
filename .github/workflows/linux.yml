@@ -44,9 +44,9 @@ jobs:
 
       - name: Package tarball
         run: |
-          mkdir -p dist
-          tar -czf dist/omniproxy-linux-x86_64.tar.gz \
-            -C app/build/linux/x64/release/bundle omniproxy
+          mkdir -p dist/stage/omniproxy
+          cp -r app/build/linux/x64/release/bundle/. dist/stage/omniproxy/
+          tar -czf dist/omniproxy-linux-x86_64.tar.gz -C dist/stage omniproxy
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
