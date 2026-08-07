@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -300,6 +300,47 @@ void main() {
     await tester.pump(const Duration(milliseconds: 80));
     await tester.pumpAndSettle();
     expect(container.read(connectionProvider).session?.serverId, frankfurt);
+  });
+
+  testWidgets('after a disconnect, changing server re-targets the next connect',
+      (tester) async {
+    final client = MockApiClient(connectDelay: const Duration(milliseconds: 50));
+    await tester.pumpWidget(buildApp(client: client));
+    await tester.pumpAndSettle();
+
+    const tokyo = '00000000-0000-4000-8000-000000000001';
+    const frankfurt = '00000000-0000-4000-8000-000000000002';
+    final container =
+        ProviderScope.containerOf(tester.element(find.byType(DashboardScreen)));
+
+    // Connect to the default target (the favorite, Tokyo = A), then disconnect.
+    await tester.tap(find.text('Connect'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pumpAndSettle();
+    expect(container.read(connectionProvider).session?.serverId, tokyo);
+
+    await tester.tap(find.text('Disconnect'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pumpAndSettle();
+    expect(container.read(connectionProvider).state,
+        ConnectionState.disconnected);
+
+    // The stale session still points at Tokyo; pick Frankfurt (B) instead.
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Frankfurt Shadowsocks').last);
+    await tester.pumpAndSettle();
+    expect(container.read(selectedServerProvider), frankfurt);
+
+    // Reconnecting must use the newly selected server, not the old session's.
+    await tester.tap(find.text('Connect'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pumpAndSettle();
+    expect(container.read(connectionProvider).session?.serverId, frankfurt);
+    expect(find.text('Frankfurt Shadowsocks'), findsOneWidget);
   });
 
   testWidgets('servers tab highlights selected server and Select re-targets',

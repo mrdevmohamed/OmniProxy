@@ -84,8 +84,15 @@ class DashboardScreen extends ConsumerWidget {
   Future<void> _connect(WidgetRef ref) async {
     final servers = ref.read(serversProvider).value ?? const [];
     if (servers.isEmpty) return;
-    final session = ref.read(connectionProvider).session;
-    final target = session?.serverId ?? ref.read(selectedServerProvider);
+    final connection = ref.read(connectionProvider);
+    // A session survives a disconnect (its endedAt/error are still shown), so
+    // only follow its server id while the session is actually active. Once
+    // idle, connect to whatever the selector points at.
+    final active = connection.session != null &&
+        connection.state != ConnectionState.disconnected &&
+        connection.state != ConnectionState.error;
+    final target =
+        active ? connection.session?.serverId : ref.read(selectedServerProvider);
     if (target == null) return;
     await ref.read(connectionProvider.notifier).connect(target);
   }
