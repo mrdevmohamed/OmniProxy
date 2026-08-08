@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app/router.dart';
 import '../core/api_client.dart';
 import '../core/client_factory.dart';
 import '../core/models.dart';
@@ -274,4 +275,18 @@ class SelectedServerNotifier extends Notifier<String?> {
     final servers = ref.read(serversProvider).value ?? const [];
     if (servers.any((s) => s.id == id)) state = id;
   }
+}
+
+/// Active shell destination, owned outside the shell so non-widget entry
+/// points (the system tray "Settings" action) can navigate. Dashboard is the
+/// landing destination.
+final shellDestinationProvider =
+    NotifierProvider<ShellDestinationNotifier, ShellDestination>(
+        ShellDestinationNotifier.new);
+
+class ShellDestinationNotifier extends Notifier<ShellDestination> {
+  @override
+  ShellDestination build() => ShellDestination.dashboard;
+
+  void select(ShellDestination destination) => state = destination;
 }

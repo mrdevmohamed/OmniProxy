@@ -38,13 +38,13 @@ class HomeShell extends ConsumerStatefulWidget {
 }
 
 class _HomeShellState extends ConsumerState<HomeShell> {
-  int _index = ShellDestination.dashboard.index;
-
-  void _select(int index) => setState(() => _index = index);
+  void _select(int index) => ref
+      .read(shellDestinationProvider.notifier)
+      .select(ShellDestination.values[index]);
 
   @override
   Widget build(BuildContext context) {
-    final destination = ShellDestination.values[_index];
+    final destination = ref.watch(shellDestinationProvider);
     final screens = <Widget>[
       DashboardScreen(onNavigateToServers: _selectServers),
       const ServersScreen(),
@@ -73,7 +73,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           body: Row(
             children: [
               NavigationRail(
-                selectedIndex: _index,
+                selectedIndex: destination.index,
                 onDestinationSelected: _select,
                 labelType: NavigationRailLabelType.all,
                 leading: const Padding(
@@ -90,16 +90,16 @@ class _HomeShellState extends ConsumerState<HomeShell> {
                 ],
               ),
               const VerticalDivider(width: 1, thickness: 1),
-              Expanded(child: screens[_index]),
+              Expanded(child: screens[destination.index]),
             ],
           ),
         );
       }
       return Scaffold(
         appBar: appBar,
-        body: screens[_index],
+        body: screens[destination.index],
         bottomNavigationBar: NavigationBar(
-          selectedIndex: _index,
+          selectedIndex: destination.index,
           onDestinationSelected: _select,
           destinations: [
             for (final d in ShellDestination.values)

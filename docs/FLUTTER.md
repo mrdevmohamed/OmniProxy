@@ -12,17 +12,18 @@ The `app/` tree is the single Flutter codebase that ships on Android, Linux and 
 
 Everything the UI needs from "the product" is a method on `ApiClient` or an event on its `events` stream (`app/lib/core/api_client.dart:9`). Every concrete transport implements the same contract (`docs/api-contract.md`) — "pure transport, no business logic" is enforced by construction: `BridgeApiClient` is the *only* place that maps `ApiClient` calls onto wire strings, and the transports only frame/decode JSON.
 
-Dependencies are deliberately minimal (`app/pubspec.yaml:30-40`): `flutter_riverpod ^3.4.2` (state), `ffi ^2.1.3` (dart:ffi `malloc`/`Utf8` helpers for the desktop transports), `cupertino_icons`. **There is no `go_router`, no codegen, no localizations package** — the `lib/l10n/generated/` directory is empty, and navigation is a hand-rolled enum shell plus one imperative `Navigator.push` (see §3).
+Dependencies are deliberately minimal (`app/pubspec.yaml:30-40`): `flutter_riverpod ^3.4.2` (state), `ffi ^2.1.3` (dart:ffi `malloc`/`Utf8` helpers for the desktop transports), `cupertino_icons`, plus `tray_manager ^0.5.3` and `window_manager ^0.5.2` (M8.5 system tray / window management). **There is no `go_router`, no codegen, no localizations package** — the `lib/l10n/generated/` directory is empty, and navigation is a hand-rolled enum shell plus one imperative `Navigator.push` (see §3).
 
 The mock exists because M5 (shell) landed before the real transports (M6–M8). That ordering decision is why the `ApiClient` interface is abstracted in the first place: the shell was built and tested against an in-memory implementation of the contract, then the Linux/Android transports were dropped in behind the same interface with zero UI changes.
 
 ## 2. App architecture
 
 ```
-main()                          ProviderScope(apiClientProvider, settings, servers, connection, logs)
-  └─ OmniProxyApp (ConsumerWidget)         watches settingsProvider → themeMode
-       └─ MaterialApp(theme/darkTheme/themeMode, home: HomeShell)
-            └─ HomeShell (ConsumerStatefulWidget)   _index: ShellDestination
+main()                          ProviderContainer + SystemTrayService (tray/window listeners)
+  └─ UncontrolledProviderScope(apiClientProvider, settings, servers, connection, logs)
+       └─ OmniProxyApp (ConsumerWidget)         watches settingsProvider → themeMode
+            └─ MaterialApp(theme/darkTheme/themeMode, home: HomeShell)
+                 └─ HomeShell (ConsumerStatefulWidget)   shellDestinationProvider
                  ├─ AppBar(title = destination.label, actions: [_ConnectionStatusChip])
                  └─ LayoutBuilder (maxWidth >= 700)
                       ├─ wide:   Scaffold(NavigationRail … VerticalDivider … screens[_index])
@@ -34,9 +35,9 @@ main()                          ProviderScope(apiClientProvider, settings, serve
 
 Widget tree facts worth knowing:
 
-- `main.dart:7` wraps everything in `ProviderScope` — Riverpod 3, manual providers (no codegen), as decided in M5 (`docs/implementation-plan.md:95`).
+- `main.dart:7-21` — `main()` creates the app's `ProviderContainer` (`:12`), initializes the desktop `SystemTrayService` with it (`:13`, a strict no-op on Android), and mounts `OmniProxyApp` inside `UncontrolledProviderScope` (`:19`) so the tray can read/watch the same providers. Riverpod 3, manual providers (no codegen), as decided in M5 (`docs/implementation-plan.md:95`).
 - `app_root.dart:14-29` — `OmniProxyApp` is a `ConsumerWidget` that watches `settingsProvider` and derives `themeMode` from `settings.theme` via `AppTheme.modeFor`. The whole shell rebuilds on theme change, which is exactly what makes the theme feel instant and why settings live in a Riverpod notifier rather than local state.
-- `app_root.dart:33-118` — `HomeShell` holds a single `int _index` and builds *all four* screens in a list but shows only `screens[_index]`. Screens are **not** kept alive with `IndexedStack`: switching tabs disposes the previous screen's state. This is a deliberate MVP tradeoff (state lives in providers, so nothing important is lost) that trades a tiny rebuild cost for simplicity. Each screen re-derives everything from providers on rebuild.
+- `app_root.dart:33-122` — `HomeShell` reads the active tab from `shellDestinationProvider` (watched at `:49`) and builds *all four* screens in a list but shows only `screens[destination.index]`. Screens are **not** kept alive with `IndexedStack`: switching tabs disposes the previous screen's state. This is a deliberate MVP tradeoff (state lives in providers, so nothing important is lost) that trades a tiny rebuild cost for simplicity. Each screen re-derives everything from providers on rebuild. The provider is owned *outside* the shell (`state/providers.dart:295`) so non-widget entry points — the system tray's Settings action (§10) — can navigate.
 - Shared UI is small and mostly private per feature; there is **no `lib/widgets/` directory**. The one cross-feature widget, `ConnectionDuration`, lives in `dashboard_screen.dart:397` (public) because the dashboard is its only consumer.
 
 ```mermaid
@@ -147,14 +148,14 @@ classDiagram
 
 There is no router package. Navigation is two mechanisms:
 
-1. **Shell tabs** — `ShellDestination` (`app/lib/app/router.dart:6`) is a plain enum carrying `tab`, `label`, `icon`, `selectedIcon` for four destinations: Dashboard (0), Servers (1), Logs (2), Settings (3). `HomeShell` maps `_index` → the destination and renders the matching screen.
+1. **Shell tabs** — `ShellDestination` (`app/lib/app/router.dart:6`) is a plain enum carrying `tab`, `label`, `icon`, `selectedIcon` for four destinations: Dashboard (0), Servers (1), Logs (2), Settings (3). The active destination lives in `shellDestinationProvider` (`state/providers.dart:295`); `HomeShell` watches it and renders the matching screen. External entry points — the system tray's Settings action (§10) — set the same provider to navigate.
 2. **Detail push** — `ServersScreen` and `DashboardScreen` open `ServerEditScreen` with `Navigator.of(context).push(MaterialPageRoute(...))` (`servers_screen.dart:284-290`). The edit screen is a full-screen route with its own `AppBar` + back button, so it works identically on mobile and desktop with no shell changes.
 
 Why no `go_router`/deep links: MVP has no URL/deep-link surface, no auth gate, and no named-route hierarchy — the shell tab model plus one push is the minimum that satisfies "responsive, dashboard default" without a dependency. The file is called `router.dart` and is documented as "top-level destinations for the responsive shell", which signals where a real router would slot in later.
 
 **Responsive behavior** — `app_root.dart:68-114`: a `LayoutBuilder` picks `maxWidth >= 700` → `NavigationRail` (left, with a `_Logo` leading, `VerticalDivider`, full labels) or `NavigationBar` (bottom). The `AppBar` and its `_ConnectionStatusChip` are shared between both modes, so the status pill is always visible.
 
-**Default landing screen** — `_HomeShellState` initializes `_index = ShellDestination.dashboard.index` (`app_root.dart:41`). The dashboard is also the *only* screen with a programmatic cross-tab path: `DashboardScreen(onNavigateToServers: _selectServers)` (`app_root.dart:49`) shows an "Add server" affordance when there are zero servers.
+**Default landing screen** — `shellDestinationProvider` builds to `ShellDestination.dashboard` (`state/providers.dart:300-303`). The dashboard is also the *only* screen with a programmatic cross-tab path: `DashboardScreen(onNavigateToServers: _selectServers)` (`app_root.dart:51`) shows an "Add server" affordance when there are zero servers.
 
 **Guarding** — there is no navigation guard. Tabs are always reachable regardless of connection state. The reason is deliberate: providers hold truth, and screens are read-only views, so navigating while connected is safe. The *actions* are guarded instead: `ServersScreen` disables "Export all" with no servers (`servers_screen.dart:73`), the dashboard's connect button is disabled when no target exists (`dashboard_screen.dart:382`), and the core itself rejects `deleteServer`/`updateServer` on the active server with `connected` (`docs/api-contract.md:161`) — the mock mirrors that (`mock_api_client.dart:228,244`). The UI surfaces those `ApiError`s in snackbars rather than blocking navigation.
 
@@ -171,6 +172,7 @@ All state is Riverpod 3 manual providers (`app/lib/state/providers.dart`). The l
 | `selectedServerProvider` (`:242`) | `NotifierProvider<SelectedServerNotifier, String?>` | connect target | favorite, else first; re-anchors on catalog changes |
 | `connectionProvider` (`:127`) | `NotifierProvider<ConnectionNotifier, ConnectionUiState>` | live connection state + session | subscribes + listens; snapshots initial state (§6) |
 | `logsProvider` (`:174`) | `NotifierProvider<LogsNotifier, List<LogEntry>>` | capped log buffer | event stream + `getLogs` backfill (§6) |
+| `shellDestinationProvider` (`:295`) | `NotifierProvider<ShellDestinationNotifier, ShellDestination>` | active shell tab | dashboard by default; settable from the rail/nav bar and the tray (§10) |
 
 Design notes per provider:
 
@@ -373,6 +375,15 @@ Selection is centralized in `ClientFactory.buildApiClient()` (`client_factory.da
 
 **Bundling:** the Linux CMake install step copies `libomniproxy.so` into `lib/` and `omniproxy-helper` next to the executable, both guarded by `if(EXISTS ...)` so a plain `flutter build linux` still works without the core artifacts (`linux/CMakeLists.txt:120-128`).
 
+**System tray (M8.5)** — `app/lib/services/system_tray_service.dart`:
+
+- `SystemTrayService` mixes in both `TrayListener` (from `tray_manager`) and `WindowListener` (from `window_manager`). It is created once in `main()` with the app's `ProviderContainer` (`main.dart:12-13`) and is a strict no-op on Android and other unsupported platforms, guarded by `SystemTrayService.isSupported`.
+- Icons: `assets/tray_icon.png` (Linux) / `assets/tray_icon.ico` (Windows), resolved by the plugin from the bundled `data/flutter_assets` directory. Windows requires `.ico` because `LoadImage` can't read PNG.
+- Menu: Open · Connect/Disconnect · Settings · Quit. The toggle label and disabled state follow `connectionProvider` (disabled while connecting/reconnecting, `system_tray_service.dart:198-207`). Settings sets `shellDestinationProvider` to settings and focuses the window.
+- Close-to-tray: `setPreventClose(true)` + `onWindowClose` → `windowManager.hide()`, enabled only once the tray is actually up so a failed tray init can't strand the user. Open restores/shows/focuses the window.
+- Quit: disconnects via `connectionProvider`, disposes the tray + listeners, releases prevent-close, destroys the window, then exits — all idempotent (`_initialized`/`_quitting` guards).
+- Platform gaps: `setToolTip` and `popUpContextMenu` are Windows-only in the plugin (Linux shows the menu via the appindicator shell), so both are gated by `Platform.isWindows`.
+
 ## 11. Testing
 
 Three test layers, each with a distinct role:
@@ -384,6 +395,8 @@ Three test layers, each with a distinct role:
 - Settings: switching mode persists into `settingsProvider` (`:102`); IPv6 dropdown change verified through the provider container (`:119`).
 - Logs: connect, then the Logs tab shows the "Connected to …" entry streamed via `logAppended` (`:150`).
 
+**Tray tests — `app/test/system_tray_service_test.dart`** (8 unit + 1 widget test): mocks the `tray_manager`/`window_manager` method channels (returning *typed* values so the plugin's Dart-side branching — e.g. `show()` first calls `isMinimized()` — doesn't throw on null). Covers init idempotency, menu label sync with connection state, toggle connect/disconnect, open/settings navigation, hide-on-close, quit teardown idempotency, listener removal on dispose, and shell navigation via `shellDestinationProvider`.
+
 **Linux E2E — `app/test/e2e_linux_bridge_test.dart`**: drives the *real* `libomniproxy.so` through `BridgeApiClient(LinuxBridge(...))` (`:35-39`). Full chain: version handshake → `addServer` (SOCKS5 to a local test server) → subscribe → `connect` in proxy mode → assert `stateChanged` reaches the event stream → **push traffic**: a Dart SOCKS5 client → engine mixed inbound → engine SOCKS5 outbound → local SOCKS5 CONNECT server → echo target, and assert the echoed payload returns (`:87-103`) → disconnect. It includes a minimal SOCKS5 server/client implementation in-test (`:129-271`). Skips with instructions if the `.so` is absent (`:23-27`), so `flutter test` stays green on a fresh checkout — a deliberate "not a hard dependency on native artifacts" choice.
 
 **Android device E2E — `app/integration_test/bridge_e2e_test.dart`**: boots the real app (so `MainActivity` wires the channels), reads `apiClientProvider` from the ProviderScope container, and drives version/CRUD/proxy-mode connect (waiting for the **UI** "Connected" chip, proving the full native→event→provider→widget path, `:60-62`), Logs-tab streaming, and disconnect. The VPN-mode case (`:78-110`) requires the system consent dialog accepted by an external adb watcher and runs only under `--dart-define=OMNIPROXY_VPN_E2E=true`.
@@ -393,6 +406,7 @@ Three test layers, each with a distinct role:
 ## 12. Known gaps & limitations
 
 - **Windows runs the mock.** `WindowsBridge` throws `UnsupportedError` and `buildApiClient` falls back to `MockApiClient` (`client_factory.dart:27`) until M8's DLL+Wintun path is verified on a Windows host/CI. Nothing on Windows is silently degraded to a stub — it's degraded *to the mock*, which is arguably worse for demo purposes but keeps the shell functional.
+- **Windows tray unverified on a host.** The `.ico` tray icon and `setToolTip`/`popUpContextMenu` paths are implemented per the plugin's Windows-only APIs but only exercised by unit tests — the same gap as the Windows bridge overall (§10).
 - **No navigation guard / no state retention across tabs.** Tabs swap screens (not `IndexedStack`), so scroll position and form state are lost on tab switch; acceptable because provider state survives.
 - **`latencyTested` event unused** — defined and emitted but not subscribed; latency reaches the UI via full `_reload` refetch instead of the event. Phase 2 seam for live latency.
 - **No timeouts on `ApiClient` calls** (§9) — a hung core request hangs the UI (the FFI call blocks the isolate on Linux).
